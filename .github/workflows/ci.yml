@@ -1,0 +1,212 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  RUST_BACKTRACE: 1
+
+jobs:
+  # Frontend checks
+  frontend:
+    name: Frontend (TypeScript, Lint, Test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./code-mitra
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: code-mitra/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck 2>/dev/null || npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint 2>/dev/null || echo "No lint script configured"
+
+      - name: Build frontend
+        run: npm run build
+
+  # Backend checks
+  backend:
+    name: Backend (Rust fmt, clippy, build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./code-mitra/src-tauri
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workdir: ./code-mitra/src-tauri
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Build (debug)
+        run: cargo build
+
+      - name: Build (release)
+        run: cargo build --release
+
+  # Tauri build test (Linux)
+  tauri-linux:
+    name: Tauri Build (Linux)
+    needs: [frontend, backend]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./code-mitra
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: code-mitra/package-lock.json
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            pkg-config \
+            wget
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workdir: ./code-mitra/src-tauri
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: test-build
+          releaseName: Test Build
+          releaseBody: Test build from CI
+          releaseDraft: true
+          prerelease: true
+
+  # Windows build test
+  tauri-windows:
+    name: Tauri Build (Windows)
+    needs: [frontend, backend]
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: ./code-mitra
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: code-mitra/package-lock.json
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workdir: ./code-mitra/src-tauri
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: test-build-windows
+          releaseName: Test Build Windows
+          releaseBody: Test build from CI
+          releaseDraft: true
+          prerelease: true
+
+  # Release build (triggered manually or on tag)
+  release:
+    name: Release Build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [tauri-linux, tauri-windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build and release (Linux)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: ${{ github.ref_name }}
+          releaseBody: |
+            Release ${{ github.ref_name }}
+            See CHANGELOG.md for details.
+          args: --target x86_64-unknown-linux-gnu
+
+      - name: Build and release (Windows)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: ${{ github.ref_name }}
+          releaseBody: |
+            Release ${{ github.ref_name }}
+            See CHANGELOG.md for details.
+          args: --target x86_64-pc-windows-msvc

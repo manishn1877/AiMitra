@@ -1,0 +1,87 @@
+version: 2
+updates:
+  # Frontend dependencies (npm)
+  - package-ecosystem: "npm"
+    directory: "code-mitra"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Kolkata"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "frontend"
+    commit-message:
+      prefix: "deps(frontend)"
+    groups:
+      dev-dependencies:
+        patterns:
+          - "@types/*"
+          - "typescript"
+          - "vite"
+          - "tailwind*"
+          - "postcss"
+          - "autoprefixer"
+      react-ecosystem:
+        patterns:
+          - "react*"
+          - "@tauri-apps/*"
+      ui-libraries:
+        patterns:
+          - "lucide-react"
+          - "zustand"
+          - "clsx"
+          - "tailwind-merge"
+
+  # Rust dependencies (cargo)
+  - package-ecosystem: "cargo"
+    directory: "code-mitra/src-tauri"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Kolkata"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "backend"
+    commit-message:
+      prefix: "deps(backend)"
+    groups:
+      tauri-plugins:
+        patterns:
+          - "tauri-plugin-*"
+      web-framework:
+        patterns:
+          - "axum*"
+          - "tower*"
+          - "http*"
+      async-runtime:
+        patterns:
+          - "tokio*"
+          - "futures*"
+      serialization:
+        patterns:
+          - "serde*"
+      utils:
+        patterns:
+          - "anyhow"
+          - "thiserror"
+          - "tracing*"
+          - "uuid*"
+          - "reqwest*"
+
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Asia/Kolkata"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "deps(actions)"
