@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 /**
- * Script to download models for Code Mitra
+ * Script to download models for AiMitra
  * Usage: npm run download:models
  */
 
@@ -57,7 +57,7 @@ async function downloadModel(model: typeof MODEL_REGISTRY[0]) {
 }
 
 async function main() {
-  console.log('🔧 Code Mitra Model Downloader')
+  console.log('🔧 AiMitra Model Downloader')
   console.log('================================')
 
   // Create models directory

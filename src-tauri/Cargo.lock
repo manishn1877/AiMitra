@@ -47,6 +47,7 @@ dependencies = [
  "notify",
  "once_cell",
  "parking_lot",
+ "ponytail",
  "reqwest 0.12.28",
  "rmcp",
  "schemars 0.8.22",
@@ -1228,6 +1229,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "44c45a9d03d6676652bcb5e724c7e988de1acad23a711b5217ab9cbecbec2225"
 dependencies = [
  "dirs-sys 0.4.1",
+]
+
+[[package]]
+name = "dirs"
+version = "6.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
+dependencies = [
+ "dirs-sys 0.5.0",
 ]
 
 [[package]]
@@ -3844,6 +3854,17 @@ dependencies = [
  "pin-project-lite",
  "rustix 1.1.5",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "ponytail"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a297ed63340e23b3518b467d20669eca68d90c2c3df5b35db3cccabbc30195d8"
+dependencies = [
+ "dirs 6.0.0",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

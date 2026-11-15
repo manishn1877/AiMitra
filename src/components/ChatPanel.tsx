@@ -113,7 +113,7 @@ export function ChatPanel() {
         {messages.length === 0 && !isGenerating && (
           <div className="flex flex-col items-center justify-center h-full text-center text-slate-500 dark:text-slate-400">
             <Bot className="w-16 h-16 mb-4 text-brand-500/50" />
-            <h3 className="text-lg font-medium mb-2">Welcome to Code Mitra</h3>
+            <h3 className="text-lg font-medium mb-2">Welcome to AiMitra</h3>
             <p className="text-sm max-w-xs">
               Your local AI code assistant. Ask me to write, explain, or debug code — all running privately on your machine.
             </p>

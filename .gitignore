@@ -47,3 +47,9 @@ coverage/
 
 # TypeScript cache
 *.tsbuildinfo
+# Generated Tauri schemas
+src-tauri/gen/
+
+# Local backup files
+src-tauri/src/main.rs.bak
+*.backup

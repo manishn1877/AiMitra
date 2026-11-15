@@ -1,11 +1,11 @@
-# Code Mitra - Quick Start Guide
+# AiMitra - Quick Start Guide
 
 ## 🚀 1-Minute Development Start (Recommended for Daily Work)
 
 **Get coding FAST - no complex builds needed!**
 
 ```powershell
-cd C:\Users\Manis\OneDrive\Desktop\test\code-mitra
+cd C:\Users\Manis\AiMitra
 npm install        # One-time setup (installs Node deps only)
 npm run tauri:dev  # Start development mode (hot-reload enabled)
 ```
@@ -48,11 +48,10 @@ npm run tauri:build
 ```
 
 **Output locations:**
-- NSIS Installer: `src-tauri/target/release/bundle/nsis/Code Mitra Setup 0.1.0.exe`
-- MSI Installer: `src-tauri/target/release/bundle/msi/Code Mitra Setup 0.1.0.exe`
+- NSIS Installer: `src-tauri/target/release/bundle/nsis/AiMitra_0.1.0_x64-setup.exe`
+- MSI Installer: `src-tauri/target/release/bundle/msi/AiMitra_0.1.0_x64_en-US.msi`
 
 **Features:**
-- Installs to `%LOCALAPPDATA%\Programs\Code Mitra`
 - Creates Start Menu shortcut
 - Auto-downloads WebView2 if missing
 - Includes uninstaller

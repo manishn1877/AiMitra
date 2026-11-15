@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Code Mitra - Complete Windows Setup Script
+    AiMitra - Complete Windows Setup Script
     Installs all dependencies, builds llama.cpp, and prepares the project for development
 
 .DESCRIPTION
@@ -356,7 +356,7 @@ function Verify-Build {
 
 Write-Host ""
 Write-Host "╔══════════════════════════════════════════════════════════════╗" -ForegroundColor $Cyan
-Write-Host "║          Code Mitra - Windows Setup Script                  ║" -ForegroundColor $Cyan
+Write-Host "║          AiMitra - Windows Setup Script                  ║" -ForegroundColor $Cyan
 Write-Host "║          Local AI Code Assistant for 8GB RAM Laptops        ║" -ForegroundColor $Cyan
 Write-Host "╚══════════════════════════════════════════════════════════════╝" -ForegroundColor $Cyan
 Write-Host ""

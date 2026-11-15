@@ -1,9 +1,9 @@
 @echo off
-REM Code Mitra - Quick Setup Batch File
+REM AiMitra - Quick Setup Batch File
 REM Run this as Administrator for best results
 
 echo ╔══════════════════════════════════════════════════════════════╗
-echo ║          Code Mitra - Windows Setup                         ║
+echo ║          AiMitra - Windows Setup                         ║
 echo ║          Local AI Code Assistant for 8GB RAM Laptops        ║
 echo ╚══════════════════════════════════════════════════════════════╝
 echo.

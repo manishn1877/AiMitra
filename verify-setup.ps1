@@ -17,7 +17,7 @@ function Write-INFO { param($msg) Write-Host "ℹ️  $msg" -ForegroundColor $Cy
 
 Write-Host ""
 Write-Host "╔══════════════════════════════════════════════════════════════╗" -ForegroundColor $Cyan
-Write-Host "║          Code Mitra - Setup Verification                    ║" -ForegroundColor $Cyan
+Write-Host "║          AiMitra - Setup Verification                    ║" -ForegroundColor $Cyan
 Write-Host "╚══════════════════════════════════════════════════════════════╝" -ForegroundColor $Cyan
 Write-Host ""
 

@@ -11,6 +11,8 @@
 use std::path::{Path, PathBuf};
 
 fn main() {
+    tauri_build::build();
+
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo::rustc-check-cfg=cfg(mobile)");
@@ -128,11 +130,13 @@ fn build_llama_cpp() {
         "libllama.a"
     };
 
-    let lib_path = find_library(&build_dir, lib_name)
-        .expect("Built llama library not found");
+    let lib_path = find_library(&build_dir, lib_name).expect("Built llama library not found");
 
     // Link the library
-    println!("cargo:rustc-link-search=native={}", lib_path.parent().unwrap().display());
+    println!(
+        "cargo:rustc-link-search=native={}",
+        lib_path.parent().unwrap().display()
+    );
     println!("cargo:rustc-link-lib=static=llama");
 
     // Also link required system libraries

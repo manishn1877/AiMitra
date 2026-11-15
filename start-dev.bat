@@ -1,9 +1,9 @@
 @echo off
-REM Code Mitra - One-Click Development Starter
+REM AiMitra - One-Click Development Starter
 REM Makes it simple to open, start, and connect to VS Code
 
 echo.
-echo 🚀 Starting Code Mitra Development Mode...
+echo 🚀 Starting AiMitra Development Mode...
 echo.
 
 REM Change to project directory

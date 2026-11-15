@@ -1,3 +1,4 @@
+
 {
   "$schema": "../node_modules/@tauri-apps/cli/schema/v2/tauri-config-0.1.0.json",
   "productName": "AiMitra",
@@ -9,33 +10,20 @@
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
-  "plugins": {
-    "shell": {
-      "all": false,
-      "open": true,
-      "command": false
-    },
-    "fs": {
-      "all": true,
-      "scope": ["$APPDATA/aimitra/**", "$APPDATA/aimitra/models/**"]
-    },
-    "dialog": {
-      "all": true,
-      "open": true,
-      "save": true
-    },
-    "process": {
-      "all": true
-    },
-    "os": {
-      "all": true
-    },
-    "clipboard": {
-      "all": true
-    },
-    "notification": {
-      "all": true
-    }
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "AiMitra",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 900,
+        "minHeight": 600,
+        "center": true,
+        "resizable": true,
+        "visible": true
+      }
+    ]
   },
   "bundle": {
     "active": true,

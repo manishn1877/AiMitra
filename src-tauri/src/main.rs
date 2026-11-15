@@ -91,10 +91,10 @@ impl Default for Settings {
             power_profile: "balanced".to_string(),
             auto_unload_idle_minutes: 10,
             unload_on_minimize: true,
-            max_cpu_percent: 80,      // Default cap at 80% to prevent overheating
+            max_cpu_percent: 80, // Default cap at 80% to prevent overheating
             thermal_throttle_enabled: true,
             low_ram_mode: false,
-            quantize_kv_cache: true,   // Enabled by default for RAM savings
+            quantize_kv_cache: true, // Enabled by default for RAM savings
         }
     }
 }
@@ -199,21 +199,17 @@ struct AppState {
     model_state: parking_lot::Mutex<ModelState>,
     models_dir: PathBuf,
     download_tx: broadcast::Sender<(String, f32)>, // (model_id, progress)
-    completion_tx: broadcast::Sender<String>,      // streaming tokens
-    done_tx: broadcast::Sender<CompletionResponse>,
-    api_server: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    api_server: parking_lot::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     system: parking_lot::Mutex<System>,
     last_tokens_per_second: RwLock<Option<f32>>,
-    thermal_monitor: parking_lot::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,  // Thermal monitoring task
-    idle_timer: parking_lot::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,       // Auto-unload timer
+    thermal_monitor: parking_lot::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>, // Thermal monitoring task
+    idle_timer: parking_lot::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>, // Auto-unload timer
 }
 
 impl AppState {
     fn new(models_dir: PathBuf) -> Self {
         // Bounded channels to prevent memory leaks
         let (download_tx, _) = broadcast::channel(16);
-        let (completion_tx, _) = broadcast::channel(256);
-        let (done_tx, _) = broadcast::channel(16);
 
         Self {
             settings: RwLock::new(Settings::default()),
@@ -225,8 +221,6 @@ impl AppState {
             }),
             models_dir,
             download_tx,
-            completion_tx,
-            done_tx,
             api_server: Mutex::new(None),
             system: parking_lot::Mutex::new(System::new_all()),
             last_tokens_per_second: RwLock::new(None),
@@ -351,7 +345,11 @@ async fn get_system_info(state: State<'_, Arc<AppState>>) -> Result<SystemInfo, 
     // Try to detect GPU (simplified)
     let gpu = detect_gpu().unwrap_or_else(|| "None detected".to_string());
 
-    Ok(SystemInfo { ram_gb, cpu_cores, gpu })
+    Ok(SystemInfo {
+        ram_gb,
+        cpu_cores,
+        gpu,
+    })
 }
 
 #[tauri::command]
@@ -373,7 +371,10 @@ async fn get_system_stats(state: State<'_, Arc<AppState>>) -> Result<SystemStats
 
     let (model_loaded, model_name) = {
         let model_state = state_arc.model_state.lock();
-        (model_state.current_model.is_some(), model_state.current_model.clone())
+        (
+            model_state.current_model.is_some(),
+            model_state.current_model.clone(),
+        )
     };
 
     let tokens_per_second = *state_arc.last_tokens_per_second.read().await;
@@ -417,7 +418,7 @@ async fn list_downloaded_models_internal(state: &Arc<AppState>) -> Result<Vec<St
     if state.models_dir.exists() {
         for entry in std::fs::read_dir(&state.models_dir).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
-            if entry.path().extension().map_or(false, |ext| ext == "gguf") {
+            if entry.path().extension().is_some_and(|ext| ext == "gguf") {
                 if let Some(name) = entry.path().file_stem().and_then(|s| s.to_str()) {
                     models.push(name.to_string());
                 }
@@ -431,7 +432,7 @@ async fn list_downloaded_models_internal(state: &Arc<AppState>) -> Result<Vec<St
 async fn download_model(
     state: State<'_, Arc<AppState>>,
     model_id: String,
-    urls: Vec<String>,  // Primary URL + mirrors
+    urls: Vec<String>, // Primary URL + mirrors
     filename: String,
     expected_sha256: String,
 ) -> Result<(), String> {
@@ -441,7 +442,16 @@ async fn download_model(
     let download_tx = state.download_tx.clone();
 
     tokio::spawn(async move {
-        if let Err(e) = download_model_internal(&models_dir, &model_id, &urls, &filename, &expected_sha256, &download_tx).await {
+        if let Err(e) = download_model_internal(
+            &models_dir,
+            &model_id,
+            &urls,
+            &filename,
+            &expected_sha256,
+            &download_tx,
+        )
+        .await
+        {
             error!("Download failed for {}: {}", model_id, e);
             let _ = download_tx.send((model_id, -1.0)); // Error signal
         }
@@ -469,7 +479,16 @@ async fn download_model_internal(
         info!("Trying download from mirror {}: {}", idx + 1, url);
         let _ = download_tx.send((model_id.to_string(), -2.0 - idx as f32)); // Signal which mirror
 
-        match try_download_from_url(&client, url, &file_path, expected_sha256, model_id, download_tx).await {
+        match try_download_from_url(
+            &client,
+            url,
+            &file_path,
+            expected_sha256,
+            model_id,
+            download_tx,
+        )
+        .await
+        {
             Ok(()) => {
                 info!("Download complete from mirror {}: {}", idx + 1, model_id);
                 let _ = download_tx.send((model_id.to_string(), 100.0));
@@ -501,14 +520,18 @@ async fn try_download_from_url(
     let response = client.get(url).send().await.context("Send request")?;
     let total_size = response.content_length().unwrap_or(0) as f32;
 
-    let mut file = tokio::fs::File::create(file_path).await.context("Create file")?;
+    let mut file = tokio::fs::File::create(file_path)
+        .await
+        .context("Create file")?;
     let mut hasher = Sha256::new();
     let mut downloaded: f32 = 0.0;
     let mut stream = response.bytes_stream();
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("Read chunk")?;
-        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk).await.context("Write chunk")?;
+        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+            .await
+            .context("Write chunk")?;
         hasher.update(&chunk);
         downloaded += chunk.len() as f32;
 
@@ -525,7 +548,11 @@ async fn try_download_from_url(
         let actual = hex::encode(hasher.finalize());
         if actual != expected_sha256 {
             std::fs::remove_file(file_path).ok();
-            anyhow::bail!("Checksum mismatch: expected {}, got {}", expected_sha256, actual);
+            anyhow::bail!(
+                "Checksum mismatch: expected {}, got {}",
+                expected_sha256,
+                actual
+            );
         }
     }
 
@@ -538,7 +565,10 @@ async fn delete_model(state: State<'_, Arc<AppState>>, model_id: String) -> Resu
 
     // Find actual filename
     let registry = get_model_registry();
-    let model_info = registry.iter().find(|m| m.id == model_id).ok_or("Model not in registry")?;
+    let model_info = registry
+        .iter()
+        .find(|m| m.id == model_id)
+        .ok_or("Model not in registry")?;
     let file_path = state_arc.models_dir.join(&model_info.filename);
 
     // Unload if currently loaded
@@ -569,7 +599,10 @@ async fn load_model(state: State<'_, Arc<AppState>>, model_id: String) -> Result
 
     // Find model file - get path without holding lock
     let registry = get_model_registry();
-    let model_info = registry.iter().find(|m| m.id == model_id).ok_or("Model not in registry")?;
+    let model_info = registry
+        .iter()
+        .find(|m| m.id == model_id)
+        .ok_or("Model not in registry")?;
     let model_path = state_arc.models_dir.join(&model_info.filename);
 
     if !model_path.exists() {
@@ -582,24 +615,40 @@ async fn load_model(state: State<'_, Arc<AppState>>, model_id: String) -> Result
     // Start llama.cpp server process
     let (tx, _rx) = mpsc::unbounded_channel::<String>();
 
-    let llama_bin = find_llama_binary().ok_or("llama-server not found. Build llama.cpp or install Ollama.")?;
+    let llama_bin =
+        find_llama_binary().ok_or("llama-server not found. Build llama.cpp or install Ollama.")?;
 
     let mut cmd = tokio::process::Command::new(&llama_bin);
-    cmd.arg("-m").arg(&model_path)
-        .arg("-c").arg(settings.context_length.to_string())
-        .arg("--temp").arg(settings.temperature.to_string())
-        .arg("--top-p").arg(settings.top_p.to_string())
-        .arg("-t").arg(if settings.threads > 0 { settings.threads.to_string() } else { "0".to_string() })
-        .arg("-ngl").arg(settings.gpu_layers.to_string())
-        .arg("-b").arg(settings.batch_size.to_string())
-        .arg("--port").arg(settings.port.to_string())
-        .arg("--host").arg("127.0.0.1")
+    cmd.arg("-m")
+        .arg(&model_path)
+        .arg("-c")
+        .arg(settings.context_length.to_string())
+        .arg("--temp")
+        .arg(settings.temperature.to_string())
+        .arg("--top-p")
+        .arg(settings.top_p.to_string())
+        .arg("-t")
+        .arg(if settings.threads > 0 {
+            settings.threads.to_string()
+        } else {
+            "0".to_string()
+        })
+        .arg("-ngl")
+        .arg(settings.gpu_layers.to_string())
+        .arg("-b")
+        .arg(settings.batch_size.to_string())
+        .arg("--port")
+        .arg(settings.port.to_string())
+        .arg("--host")
+        .arg("127.0.0.1")
         .arg("--embedding") // Enable embeddings endpoint
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .stdin(std::process::Stdio::piped());
 
-    let mut child = cmd.spawn().map_err(|e| format!("Failed to start llama-server: {}", e))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to start llama-server: {}", e))?;
     let _child_pid = child.id();
 
     // Monitor stdout/stderr
@@ -714,7 +763,8 @@ async fn generate_completion(
     });
 
     let start = Instant::now();
-    let response = client.post(&url)
+    let response = client
+        .post(&url)
         .json(&payload)
         .send()
         .await
@@ -870,7 +920,11 @@ fn detect_gpu() -> Option<String> {
         if let Ok(output) = Command::new("lspci").args(["-nn"]).output() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
-                if line.to_lowercase().contains("vga") || line.to_lowercase().contains("3d") || line.to_lowercase().contains("nvidia") || line.to_lowercase().contains("amd") {
+                if line.to_lowercase().contains("vga")
+                    || line.to_lowercase().contains("3d")
+                    || line.to_lowercase().contains("nvidia")
+                    || line.to_lowercase().contains("amd")
+                {
                     return Some(line.trim().to_string());
                 }
             }
@@ -884,7 +938,9 @@ async fn save_settings_to_disk(_state: &Arc<AppState>, settings: &Settings) -> R
     std::fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
     let settings_path = config_dir.join("settings.json");
     let json = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
-    tokio::fs::write(settings_path, json).await.map_err(|e| e.to_string())?;
+    tokio::fs::write(settings_path, json)
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -892,7 +948,9 @@ async fn load_settings_from_disk(state: &Arc<AppState>) -> Result<(), String> {
     let config_dir = dirs::config_dir().ok_or("No config dir")?.join("aimitra");
     let settings_path = config_dir.join("settings.json");
     if settings_path.exists() {
-        let json = tokio::fs::read_to_string(settings_path).await.map_err(|e| e.to_string())?;
+        let json = tokio::fs::read_to_string(settings_path)
+            .await
+            .map_err(|e| e.to_string())?;
         let settings: Settings = serde_json::from_str(&json).map_err(|e| e.to_string())?;
         *state.settings.write().await = settings;
     }
@@ -907,7 +965,7 @@ async fn restart_api_server(state: &State<'_, Arc<AppState>>, port: u16) -> Resu
     }
 
     let state_clone = state.inner().clone();
-    let handle = tokio::spawn(async move {
+    let handle = tauri::async_runtime::spawn(async move {
         run_api_server(state_clone, port).await;
     });
 
@@ -926,7 +984,10 @@ async fn stop_api_server(state: &Arc<AppState>) -> Result<(), String> {
 async fn run_api_server(state: Arc<AppState>, port: u16) {
     let app = Router::new()
         .route("/health", get(health_check))
-        .route("/v1/completions", post(completions_handler).options(cors_preflight))
+        .route(
+            "/v1/completions",
+            post(completions_handler).options(cors_preflight),
+        )
         .route("/v1/models", get(models_handler).options(cors_preflight))
         .with_state(state);
 
@@ -996,11 +1057,20 @@ async fn completions_handler(
                 response_builder = response_builder
                     .header("Access-Control-Allow-Origin", "*")
                     .header("Access-Control-Allow-Methods", "POST, OPTIONS")
-                    .header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+                    .header(
+                        "Access-Control-Allow-Headers",
+                        "Content-Type, Authorization",
+                    );
 
-                response_builder.body(Body::from_stream(stream)).unwrap_or_else(|_| {
-                    (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create streaming response").into_response()
-                })
+                response_builder
+                    .body(Body::from_stream(stream))
+                    .unwrap_or_else(|_| {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Failed to create streaming response",
+                        )
+                            .into_response()
+                    })
             } else {
                 // Non-streaming: buffer and return
                 let body = resp.bytes().await.unwrap_or_default();
@@ -1008,9 +1078,16 @@ async fn completions_handler(
                 response_builder = response_builder
                     .header("Access-Control-Allow-Origin", "*")
                     .header("Access-Control-Allow-Methods", "POST, OPTIONS")
-                    .header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+                    .header(
+                        "Access-Control-Allow-Headers",
+                        "Content-Type, Authorization",
+                    );
                 response_builder.body(Body::from(body)).unwrap_or_else(|_| {
-                    (StatusCode::INTERNAL_SERVER_ERROR, "Failed to create response").into_response()
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Failed to create response",
+                    )
+                        .into_response()
                 })
             }
         }
@@ -1018,25 +1095,32 @@ async fn completions_handler(
             let response = Response::builder()
                 .status(StatusCode::BAD_GATEWAY)
                 .header("Access-Control-Allow-Origin", "*");
-            response.body(Body::from(e.to_string())).unwrap_or_else(|_| {
-                (StatusCode::INTERNAL_SERVER_ERROR, "Gateway error").into_response()
-            })
+            response
+                .body(Body::from(e.to_string()))
+                .unwrap_or_else(|_| {
+                    (StatusCode::INTERNAL_SERVER_ERROR, "Gateway error").into_response()
+                })
         }
     }
 }
 
 async fn models_handler(AxumState(state): AxumState<Arc<AppState>>) -> impl IntoResponse {
     let models = get_model_registry();
-    let downloaded = list_downloaded_models_internal(&state).await.unwrap_or_default();
+    let downloaded = list_downloaded_models_internal(&state)
+        .await
+        .unwrap_or_default();
 
-    let model_list: Vec<serde_json::Value> = models.into_iter().map(|m| {
-        serde_json::json!({
-            "id": m.id,
-            "object": "model",
-            "owned_by": "local",
-            "downloaded": downloaded.contains(&m.id),
+    let model_list: Vec<serde_json::Value> = models
+        .into_iter()
+        .map(|m| {
+            serde_json::json!({
+                "id": m.id,
+                "object": "model",
+                "owned_by": "local",
+                "downloaded": downloaded.contains(&m.id),
+            })
         })
-    }).collect();
+        .collect();
 
     Json(serde_json::json!({ "object": "list", "data": model_list }))
 }
@@ -1048,7 +1132,10 @@ async fn cors_preflight() -> impl IntoResponse {
         [
             (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
             (header::ACCESS_CONTROL_ALLOW_METHODS, "POST, GET, OPTIONS"),
-            (header::ACCESS_CONTROL_ALLOW_HEADERS, "Content-Type, Authorization"),
+            (
+                header::ACCESS_CONTROL_ALLOW_HEADERS,
+                "Content-Type, Authorization",
+            ),
             (header::ACCESS_CONTROL_MAX_AGE, "86400"),
         ],
     )
@@ -1076,7 +1163,10 @@ async fn thermal_monitor_loop(state: Arc<AppState>, handle: tauri::AppHandle) {
             let mut sys = state.system.lock();
             sys.refresh_cpu_usage();
             sys.refresh_memory();
-            (sys.global_cpu_info().cpu_usage(), get_cpu_temperature().unwrap_or(0.0))
+            (
+                sys.global_cpu_info().cpu_usage(),
+                get_cpu_temperature().unwrap_or(0.0),
+            )
         };
 
         // Determine thermal state
@@ -1094,12 +1184,15 @@ async fn thermal_monitor_loop(state: Arc<AppState>, handle: tauri::AppHandle) {
         }
 
         // Emit thermal state to frontend
-        let _ = handle.emit("thermal:state", serde_json::json!({
-            "thermal_state": thermal_state,
-            "cpu_temp": cpu_temp,
-            "cpu_usage": cpu_usage,
-            "power_profile": power_profile,
-        }));
+        let _ = handle.emit(
+            "thermal:state",
+            serde_json::json!({
+                "thermal_state": thermal_state,
+                "cpu_temp": cpu_temp,
+                "cpu_usage": cpu_usage,
+                "power_profile": power_profile,
+            }),
+        );
     }
 }
 
@@ -1126,7 +1219,10 @@ async fn idle_monitor_loop(state: Arc<AppState>) {
                 model_state.current_model.is_some()
             };
             if model_loaded {
-                info!("Auto-unloading model due to idle timeout ({} min)", settings.auto_unload_idle_minutes);
+                info!(
+                    "Auto-unloading model due to idle timeout ({} min)",
+                    settings.auto_unload_idle_minutes
+                );
                 // Inline unload without Tauri State wrapper - drop locks before await
                 let process = {
                     let mut ms = state.model_state.lock();
@@ -1150,7 +1246,13 @@ fn get_cpu_temperature() -> Option<f32> {
         use std::process::Command;
         // Try WMI for CPU temperature
         if let Ok(output) = Command::new("wmic")
-            .args(["/namespace:\\\\root\\wmi", "path", "MSAcpi_ThermalZoneTemperature", "get", "CurrentTemperature"])
+            .args([
+                "/namespace:\\\\root\\wmi",
+                "path",
+                "MSAcpi_ThermalZoneTemperature",
+                "get",
+                "CurrentTemperature",
+            ])
             .output()
         {
             let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1185,10 +1287,15 @@ fn determine_thermal_state(cpu_temp: f32, cpu_usage: f32) -> String {
         "warm"
     } else {
         "normal"
-    }.to_string()
+    }
+    .to_string()
 }
 
-async fn apply_thermal_throttle(state: &Arc<AppState>, _settings: &Settings, thermal_state: String) {
+async fn apply_thermal_throttle(
+    state: &Arc<AppState>,
+    _settings: &Settings,
+    thermal_state: String,
+) {
     let mut model_state = state.model_state.lock();
 
     if let Some(process) = model_state.llama_process.as_mut() {
@@ -1200,7 +1307,14 @@ async fn apply_thermal_throttle(state: &Arc<AppState>, _settings: &Settings, the
                     use std::process::Command;
                     // Lower process priority
                     let _ = Command::new("wmic")
-                        .args(["process", "where", &format!("ProcessId={}", process.id().unwrap_or(0)), "call", "setpriority", "16384"]) // BELOW_NORMAL_PRIORITY_CLASS
+                        .args([
+                            "process",
+                            "where",
+                            &format!("ProcessId={}", process.id().unwrap_or(0)),
+                            "call",
+                            "setpriority",
+                            "16384",
+                        ]) // BELOW_NORMAL_PRIORITY_CLASS
                         .output();
                 }
                 #[cfg(target_os = "linux")]
@@ -1217,7 +1331,14 @@ async fn apply_thermal_throttle(state: &Arc<AppState>, _settings: &Settings, the
                 {
                     use std::process::Command;
                     let _ = Command::new("wmic")
-                        .args(["process", "where", &format!("ProcessId={}", process.id().unwrap_or(0)), "call", "setpriority", "32768"]) // NORMAL_PRIORITY_CLASS
+                        .args([
+                            "process",
+                            "where",
+                            &format!("ProcessId={}", process.id().unwrap_or(0)),
+                            "call",
+                            "setpriority",
+                            "32768",
+                        ]) // NORMAL_PRIORITY_CLASS
                         .output();
                 }
             }
@@ -1299,7 +1420,10 @@ async fn get_thermal_state(state: State<'_, Arc<AppState>>) -> Result<serde_json
 }
 
 #[tauri::command]
-async fn set_thermal_throttle(state: State<'_, Arc<AppState>>, enabled: bool) -> Result<(), String> {
+async fn set_thermal_throttle(
+    state: State<'_, Arc<AppState>>,
+    enabled: bool,
+) -> Result<(), String> {
     let mut settings = state.settings.write().await;
     settings.thermal_throttle_enabled = enabled;
     drop(settings);
@@ -1323,7 +1447,10 @@ async fn set_auto_unload(state: State<'_, Arc<AppState>>, minutes: u32) -> Resul
 }
 
 #[tauri::command]
-async fn set_unload_on_minimize(state: State<'_, Arc<AppState>>, enabled: bool) -> Result<(), String> {
+async fn set_unload_on_minimize(
+    state: State<'_, Arc<AppState>>,
+    enabled: bool,
+) -> Result<(), String> {
     let mut settings = state.settings.write().await;
     settings.unload_on_minimize = enabled;
     drop(settings);
@@ -1370,7 +1497,13 @@ async fn apply_cpu_limit(pid: u32, max_percent: u32) {
         // Use Process Governor or similar for CPU limiting
         // This is a simplified approach - in production use proper CPU limiting
         let _ = Command::new("powershell")
-            .args(["-Command", &format!("Get-Process -Id {} | ForEach-Object {{ $_.PriorityClass = 'BelowNormal' }}", pid)])
+            .args([
+                "-Command",
+                &format!(
+                    "Get-Process -Id {} | ForEach-Object {{ $_.PriorityClass = 'BelowNormal' }}",
+                    pid
+                ),
+            ])
             .output();
     }
     #[cfg(target_os = "linux")]
@@ -1426,10 +1559,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             if settings.enable_api {
                 let port = settings.port;
                 drop(settings);
+
                 let state_clone = state.inner().clone();
-                tokio::spawn(async move {
+                let api_handle = tauri::async_runtime::spawn(async move {
                     run_api_server(state_clone, port).await;
                 });
+
+                *state.api_server.lock() = Some(api_handle);
             }
 
             // System stats updater (includes thermal monitoring)
@@ -1452,11 +1588,15 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                     };
                     let (model_loaded, model_name) = {
                         let model_state = state_clone.model_state.lock();
-                        (model_state.current_model.is_some(), model_state.current_model.clone())
+                        (
+                            model_state.current_model.is_some(),
+                            model_state.current_model.clone(),
+                        )
                     };
                     let tokens_per_second = *state_clone.last_tokens_per_second.read().await;
                     let settings = state_clone.settings.read().await.clone();
-                    let thermal_state = determine_thermal_state(cpu_temperature.unwrap_or(0.0), cpu_usage);
+                    let thermal_state =
+                        determine_thermal_state(cpu_temperature.unwrap_or(0.0), cpu_usage);
                     let stats = SystemStats {
                         ram_used,
                         ram_total,

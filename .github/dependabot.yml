@@ -2,7 +2,7 @@ version: 2
 updates:
   # Frontend dependencies (npm)
   - package-ecosystem: "npm"
-    directory: "code-mitra"
+    directory: "."
     schedule:
       interval: "weekly"
       day: "monday"
@@ -36,7 +36,7 @@ updates:
 
   # Rust dependencies (cargo)
   - package-ecosystem: "cargo"
-    directory: "code-mitra/src-tauri"
+    directory: "src-tauri"
     schedule:
       interval: "weekly"
       day: "monday"
