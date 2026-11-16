@@ -30,7 +30,7 @@ tokio-util = { version = "0.7", features = ["codec"] }
 futures = "0.3"
 sha2 = "0.10"
 hex = "0.4"
-dirs = "5.0"
+dirs = "7.0"
 sysinfo = { version = "0.30", features = ["default"] }
 axum = { version = "0.8", features = ["json", "ws"] }
 tower = "0.5"
