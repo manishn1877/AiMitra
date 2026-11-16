@@ -1147,8 +1147,8 @@ async fn cors_preflight() -> impl IntoResponse {
 
 async fn thermal_monitor_loop(state: Arc<AppState>, handle: tauri::AppHandle) {
     let mut interval = interval(Duration::from_secs(5)); // Check every 5 seconds
-    // Note: a full idle timer with accurate wall-clock tracking can be added later.
-    // The idle_monitor_loop handles auto-unload based on generation activity.
+                                                         // Note: a full idle timer with accurate wall-clock tracking can be added later.
+                                                         // The idle_monitor_loop handles auto-unload based on generation activity.
     loop {
         interval.tick().await;
 
