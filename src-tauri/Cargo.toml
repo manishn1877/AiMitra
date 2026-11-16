@@ -64,7 +64,7 @@ notify = "6.1"
 walkdir = "2.5"
 
 # Evaluation & benchmarking
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
 
 # PonyTail - Enhanced plugin support
 ponytail = "0.1"
