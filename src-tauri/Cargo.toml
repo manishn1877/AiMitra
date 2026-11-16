@@ -60,7 +60,7 @@ figment = { version = "0.10", features = ["toml"] }
 config = "0.15"
 
 # Skills & plugins
-notify = "6.1"
+notify = "8.2"
 walkdir = "2.5"
 
 # Evaluation & benchmarking
