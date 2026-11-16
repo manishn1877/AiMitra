@@ -57,7 +57,7 @@ tokio-stream = "0.1"
 
 # Configuration & validation
 figment = { version = "0.10", features = ["toml"] }
-config = "0.13"
+config = "0.15"
 
 # Skills & plugins
 notify = "6.1"
