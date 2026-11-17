@@ -483,7 +483,7 @@ async fn download_model(
                     match event {
                         Ok((event_model_id, progress)) if event_model_id == model_id && progress >= 0.0 => {
                             let _ = app_handle.emit("model:download_progress", serde_json::json!({
-                                "modelId": event_model_id, "progress"
+                                "modelId": event_model_id, "progress": progress
                             }));
                         }
                         Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
