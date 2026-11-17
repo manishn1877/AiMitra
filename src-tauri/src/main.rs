@@ -418,9 +418,13 @@ async fn list_downloaded_models_internal(state: &Arc<AppState>) -> Result<Vec<St
     if state.models_dir.exists() {
         for entry in std::fs::read_dir(&state.models_dir).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
-            if entry.path().extension().is_some_and(|ext| ext == "gguf") {
-                if let Some(name) = entry.path().file_stem().and_then(|s| s.to_str()) {
-                    models.push(name.to_string());
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "gguf") {
+                if let Some(model) = get_model_registry()
+                    .iter()
+                    .find(|model| path.file_name().is_some_and(|name| name == model.filename.as_str()))
+                {
+                    models.push(model.id.clone());
                 }
             }
         }
