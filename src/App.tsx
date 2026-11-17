@@ -62,6 +62,10 @@ export function App() {
         if (success) {
           refreshDownloadedModels()
           setCurrentModel(modelId)
+        } else {
+          setDownloadingModel(null)
+          setDownloadProgress(0)
+          console.error(`Model download failed: ${modelId}`)
         }
       })
       return () => {
