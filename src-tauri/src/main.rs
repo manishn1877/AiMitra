@@ -517,7 +517,7 @@ async fn try_download_from_url(
     model_id: &str,
     download_tx: &broadcast::Sender<(String, f32)>,
 ) -> Result<()> {
-    let response = client.get(url).send().await.context("Send request")?;
+    let response = client.get(url).send().await.context("Send request")?.error_for_status().context("Download server returned an error status")?;
     let total_size = response.content_length().unwrap_or(0) as f32;
 
     let mut file = tokio::fs::File::create(file_path)
@@ -1553,6 +1553,37 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .setup(|app| {
             let handle = app.handle();
             let state = handle.state::<Arc<AppState>>();
+
+            // Forward model download progress from the backend channel to the frontend.
+            let mut download_rx = state.download_tx.subscribe();
+            let download_app = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    match download_rx.recv().await {
+                        Ok((model_id, progress)) if progress >= 0.0 => {
+                            let _ = download_app.emit(
+                                "model:download_progress",
+                                serde_json::json!({ "modelId": model_id, "progress": progress }),
+                            );
+                            if progress >= 100.0 {
+                                let _ = download_app.emit(
+                                    "model:download_complete",
+                                    serde_json::json!({ "modelId": model_id, "success": true }),
+                                );
+                            }
+                        }
+                        Ok((model_id, progress)) if progress == -1.0 => {
+                            let _ = download_app.emit(
+                                "model:download_complete",
+                                serde_json::json!({ "modelId": model_id, "success": false }),
+                            );
+                        }
+                        Ok((_model_id, _status)) => {}
+                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
 
             // Start API server if enabled
             let settings = state.settings.blocking_read();
