@@ -420,10 +420,10 @@ async fn list_downloaded_models_internal(state: &Arc<AppState>) -> Result<Vec<St
             let entry = entry.map_err(|e| e.to_string())?;
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "gguf") {
-                if let Some(model) = get_model_registry()
-                    .iter()
-                    .find(|model| path.file_name().is_some_and(|name| name.to_string_lossy() == model.filename))
-                {
+                if let Some(model) = get_model_registry().iter().find(|model| {
+                    path.file_name()
+                        .is_some_and(|name| name.to_string_lossy() == model.filename)
+                }) {
                     models.push(model.id.clone());
                 }
             }
@@ -450,12 +450,20 @@ async fn download_model(
     let mut progress_rx = download_tx.subscribe();
     let app_handle = app.clone();
     let started_id = model_id.clone();
-    app.emit("model:download_started", serde_json::json!({ "modelId": started_id }))
-        .map_err(|e| format!("Could not start download UI: {e}"))?;
+    app.emit(
+        "model:download_started",
+        serde_json::json!({ "modelId": started_id }),
+    )
+    .map_err(|e| format!("Could not start download UI: {e}"))?;
 
     tokio::spawn(async move {
         let download = download_model_internal(
-            &models_dir, &model_id, &urls, &filename, &expected_sha256, &download_tx,
+            &models_dir,
+            &model_id,
+            &urls,
+            &filename,
+            &expected_sha256,
+            &download_tx,
         );
         tokio::pin!(download);
 
