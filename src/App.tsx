@@ -45,6 +45,11 @@ export function App() {
     // Listen for download progress events
     const setup = async () => {
       const { listen } = await import('@tauri-apps/api/event')
+      const unlistenStarted = await listen('model:download_started', (event) => {
+        const { modelId } = event.payload as { modelId: string }
+        setDownloadingModel(modelId)
+        setDownloadProgress(0)
+      })
       const unlistenProgress = await listen('model:download_progress', (event) => {
         const { modelId, progress } = event.payload as { modelId: string; progress: number }
         setDownloadingModel(modelId)
@@ -57,6 +62,12 @@ export function App() {
           }, 1000)
         }
       })
+      const unlistenError = await listen('model:download_error', (event) => {
+        const { modelId, error } = event.payload as { modelId: string; error: string }
+        setDownloadingModel(null)
+        setDownloadProgress(0)
+        window.alert(`Could not download ${modelId}: ${error}`)
+      })
       const unlistenComplete = await listen('model:download_complete', (event) => {
         const { modelId, success } = event.payload as { modelId: string; success: boolean }
         if (success) {
@@ -65,7 +76,9 @@ export function App() {
         }
       })
       return () => {
+        unlistenStarted()
         unlistenProgress()
+        unlistenError()
         unlistenComplete()
       }
     }
