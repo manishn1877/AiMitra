@@ -422,7 +422,7 @@ async fn list_downloaded_models_internal(state: &Arc<AppState>) -> Result<Vec<St
             if path.extension().is_some_and(|ext| ext == "gguf") {
                 if let Some(model) = get_model_registry()
                     .iter()
-                    .find(|model| path.file_name().is_some_and(|name| name == model.filename.as_str()))
+                    .find(|model| path.file_name().is_some_and(|name| name.to_string_lossy() == model.filename))
                 {
                     models.push(model.id.clone());
                 }
