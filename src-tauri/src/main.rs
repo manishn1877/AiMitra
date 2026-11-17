@@ -418,9 +418,13 @@ async fn list_downloaded_models_internal(state: &Arc<AppState>) -> Result<Vec<St
     if state.models_dir.exists() {
         for entry in std::fs::read_dir(&state.models_dir).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
-            if entry.path().extension().is_some_and(|ext| ext == "gguf") {
-                if let Some(name) = entry.path().file_stem().and_then(|s| s.to_str()) {
-                    models.push(name.to_string());
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "gguf") {
+                if let Some(model) = get_model_registry().iter().find(|model| {
+                    path.file_name()
+                        .is_some_and(|name| name.to_string_lossy() == model.filename)
+                }) {
+                    models.push(model.id.clone());
                 }
             }
         }
@@ -430,30 +434,75 @@ async fn list_downloaded_models_internal(state: &Arc<AppState>) -> Result<Vec<St
 
 #[tauri::command]
 async fn download_model(
+    app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
     model_id: String,
-    urls: Vec<String>, // Primary URL + mirrors
+    urls: Vec<String>,
     filename: String,
     expected_sha256: String,
 ) -> Result<(), String> {
-    info!("Starting download for model: {}", model_id);
+    if model_id.trim().is_empty() || filename.trim().is_empty() || urls.is_empty() {
+        return Err("Invalid model download details.".to_string());
+    }
 
     let models_dir = state.models_dir.clone();
     let download_tx = state.download_tx.clone();
+    let mut progress_rx = download_tx.subscribe();
+    let app_handle = app.clone();
+    let started_id = model_id.clone();
+    app.emit(
+        "model:download_started",
+        serde_json::json!({ "modelId": started_id }),
+    )
+    .map_err(|e| format!("Could not start download UI: {e}"))?;
 
     tokio::spawn(async move {
-        if let Err(e) = download_model_internal(
+        let download = download_model_internal(
             &models_dir,
             &model_id,
             &urls,
             &filename,
             &expected_sha256,
             &download_tx,
-        )
-        .await
-        {
-            error!("Download failed for {}: {}", model_id, e);
-            let _ = download_tx.send((model_id, -1.0)); // Error signal
+        );
+        tokio::pin!(download);
+
+        loop {
+            tokio::select! {
+                result = &mut download => {
+                    match result {
+                        Ok(()) => {
+                            let _ = app_handle.emit("model:download_progress", serde_json::json!({
+                                "modelId": model_id, "progress": 100.0
+                            }));
+                            let _ = app_handle.emit("model:download_complete", serde_json::json!({
+                                "modelId": model_id, "success": true
+                            }));
+                        }
+                        Err(err) => {
+                            error!("Download failed for {}: {:#}", model_id, err);
+                            let _ = app_handle.emit("model:download_error", serde_json::json!({
+                                "modelId": model_id, "error": format!("{err:#}")
+                            }));
+                            let _ = app_handle.emit("model:download_complete", serde_json::json!({
+                                "modelId": model_id, "success": false
+                            }));
+                        }
+                    }
+                    break;
+                }
+                event = progress_rx.recv() => {
+                    match event {
+                        Ok((event_model_id, progress)) if event_model_id == model_id && progress >= 0.0 => {
+                            let _ = app_handle.emit("model:download_progress", serde_json::json!({
+                                "modelId": event_model_id, "progress": progress
+                            }));
+                        }
+                        Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            }
         }
     });
 
@@ -517,7 +566,13 @@ async fn try_download_from_url(
     model_id: &str,
     download_tx: &broadcast::Sender<(String, f32)>,
 ) -> Result<()> {
-    let response = client.get(url).send().await.context("Send request")?;
+    let response = client
+        .get(url)
+        .send()
+        .await
+        .with_context(|| format!("Request failed for {url}"))?
+        .error_for_status()
+        .with_context(|| format!("Model server returned an HTTP error for {url}"))?;
     let total_size = response.content_length().unwrap_or(0) as f32;
 
     let mut file = tokio::fs::File::create(file_path)
