@@ -74,6 +74,7 @@ export function SettingsPanel() {
     try {
       const stored = await invoke<Settings>('get_settings')
       setSettings(stored)
+      applyThemePreference(stored.theme)
     } catch {
       // Use defaults
     }
@@ -120,8 +121,16 @@ export function SettingsPanel() {
     }
   }
 
+  const applyThemePreference = (preference: Settings['theme']) => {
+    const systemDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+    const isDark = preference === 'dark' || (preference === 'system' && systemDark)
+    document.documentElement.classList.toggle('dark', isDark)
+    window.dispatchEvent(new CustomEvent('aimitra:theme-change', { detail: preference }))
+  }
+
   const handleChange = (key: keyof Settings, value: any) => {
     setSettings(prev => ({ ...prev, [key]: value }))
+    if (key === 'theme') applyThemePreference(value as Settings['theme'])
   }
 
   return (
