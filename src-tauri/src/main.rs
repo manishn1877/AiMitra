@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -419,7 +420,7 @@ async fn list_downloaded_models_internal(state: &Arc<AppState>) -> Result<Vec<St
         for entry in std::fs::read_dir(&state.models_dir).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
             let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "gguf") {
+            if path.extension().is_some_and(|ext| ext == "gguf") && is_valid_gguf_file(&path) {
                 if let Some(model) = get_model_registry().iter().find(|model| {
                     path.file_name()
                         .is_some_and(|name| name.to_string_lossy() == model.filename)
@@ -507,6 +508,21 @@ async fn download_model(
     });
 
     Ok(())
+}
+
+fn is_valid_gguf_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if metadata.len() < 1024 * 1024 {
+        return false;
+    }
+
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut magic = [0_u8; 4];
+    file.read_exact(&mut magic).is_ok() && &magic == b"GGUF"
 }
 
 async fn download_model_internal(
@@ -597,6 +613,15 @@ async fn try_download_from_url(
     }
 
     file.flush().await.context("Flush file")?;
+    drop(file);
+
+    // A successful HTTP response can still contain an error page or text body.
+    // GGUF files start with the four-byte "GGUF" magic and are much larger than 1 MiB.
+    if !is_valid_gguf_file(file_path) {
+        anyhow::bail!(
+            "Downloaded response is not a valid GGUF model (missing GGUF header or file is too small). The server may have returned an error page."
+        );
+    }
 
     // Verify checksum (only if provided and not empty)
     if !expected_sha256.is_empty() {
