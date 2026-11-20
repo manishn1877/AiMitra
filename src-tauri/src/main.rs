@@ -203,6 +203,7 @@ struct AppState {
     api_server: parking_lot::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     system: parking_lot::Mutex<System>,
     last_tokens_per_second: RwLock<Option<f32>>,
+    last_model_activity: RwLock<Instant>,
     thermal_monitor: parking_lot::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>, // Thermal monitoring task
     idle_timer: parking_lot::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>, // Auto-unload timer
 }
@@ -225,6 +226,7 @@ impl AppState {
             api_server: Mutex::new(None),
             system: parking_lot::Mutex::new(System::new_all()),
             last_tokens_per_second: RwLock::new(None),
+            last_model_activity: RwLock::new(Instant::now()),
             thermal_monitor: Mutex::new(None),
             idle_timer: Mutex::new(None),
         }
@@ -733,7 +735,6 @@ async fn load_model(state: State<'_, Arc<AppState>>, model_id: String) -> Result
         .arg(llama_port.to_string())
         .arg("--host")
         .arg("127.0.0.1")
-        .arg("--embedding") // Enable embeddings endpoint
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .stdin(std::process::Stdio::piped());
@@ -822,6 +823,9 @@ async fn load_model(state: State<'_, Arc<AppState>>, model_id: String) -> Result
         ));
     }
 
+    // Reset the idle timer after the model is ready.
+    *state_arc.last_model_activity.write().await = Instant::now();
+
     // Update state - acquire lock only for state update
     {
         let mut model_state = state_arc.model_state.lock();
@@ -874,6 +878,8 @@ async fn generate_completion(
                 .to_string(),
         );
     }
+
+    *state.last_model_activity.write().await = Instant::now();
 
     let settings = state.settings.read().await.clone();
     let port = settings
@@ -962,6 +968,7 @@ async fn generate_completion(
         0.0
     };
     *state.last_tokens_per_second.write().await = Some(tps);
+    *state.last_model_activity.write().await = Instant::now();
 
     Ok(CompletionResponse {
         text: full_text,
@@ -1332,46 +1339,43 @@ async fn thermal_monitor_loop(state: Arc<AppState>, handle: tauri::AppHandle) {
 }
 
 async fn idle_monitor_loop(state: Arc<AppState>) {
-    let mut interval = interval(Duration::from_secs(30)); // Check every 30 seconds
+    let mut interval = interval(Duration::from_secs(30));
 
     loop {
         interval.tick().await;
 
         let settings = state.settings.read().await.clone();
         if settings.auto_unload_idle_minutes == 0 {
-            continue; // Disabled
+            continue;
         }
 
-        let tps = *state.last_tokens_per_second.read().await;
-        let is_idle = tps.is_none() || tps == Some(0.0);
+        let idle_limit = Duration::from_secs(settings.auto_unload_idle_minutes as u64 * 60);
+        let idle_for = state.last_model_activity.read().await.elapsed();
+        if idle_for < idle_limit {
+            continue;
+        }
 
-        if is_idle {
-            let _idle_duration = settings.auto_unload_idle_minutes as u64 * 60;
-            // In a real implementation, we'd track actual idle time
-            // For now, we'll check if model is loaded but no activity
-            let model_loaded = {
-                let model_state = state.model_state.lock();
-                model_state.current_model.is_some()
-            };
-            if model_loaded {
+        let process = {
+            let mut model_state = state.model_state.lock();
+            if model_state.current_model.is_none() {
+                None
+            } else {
                 info!(
-                    "Auto-unloading model due to idle timeout ({} min)",
+                    "Auto-unloading model after {} minutes of inactivity",
                     settings.auto_unload_idle_minutes
                 );
-                // Inline unload without Tauri State wrapper - drop locks before await
-                let process = {
-                    let mut ms = state.model_state.lock();
-                    ms.current_model = None;
-                    ms.model_path = None;
-                    ms.sender = None;
-                    ms.llama_process.take()
-                };
-                if let Some(mut process) = process {
-                    let _ = process.start_kill();
-                }
-                *state.last_tokens_per_second.write().await = None;
+                model_state.current_model = None;
+                model_state.model_path = None;
+                model_state.sender = None;
+                model_state.llama_process.take()
             }
+        };
+
+        if let Some(mut process) = process {
+            let _ = process.start_kill();
         }
+        *state.last_tokens_per_second.write().await = None;
+        *state.last_model_activity.write().await = Instant::now();
     }
 }
 
