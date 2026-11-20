@@ -6,6 +6,7 @@
 
 import { MODEL_REGISTRY } from '../src/lib/models'
 import { createWriteStream } from 'fs'
+import { mkdir } from 'fs/promises'
 import { pipeline } from 'stream/promises'
 import { createHash } from 'crypto'
 
@@ -61,7 +62,7 @@ async function main() {
   console.log('================================')
 
   // Create models directory
-  await Bun.write(`${MODELS_DIR}/.gitkeep`, '')
+  await mkdir(MODELS_DIR, { recursive: true })
   console.log(`\n📁 Models directory: ${MODELS_DIR}`)
 
   // Download recommended models
