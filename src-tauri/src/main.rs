@@ -910,7 +910,9 @@ async fn generate_completion(
 #[tauri::command]
 async fn stop_generation(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let settings = state.settings.read().await.clone();
-    let port = settings.port.checked_add(1)
+    let port = settings
+        .port
+        .checked_add(1)
         .ok_or("API port cannot be 65535 because llama-server uses the next port")?;
 
     let client = Client::new();
