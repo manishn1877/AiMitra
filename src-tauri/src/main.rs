@@ -867,6 +867,14 @@ async fn generate_completion(
     state: State<'_, Arc<AppState>>,
     request: CompletionRequest,
 ) -> Result<CompletionResponse, String> {
+    let model_is_loaded = state.model_state.lock().current_model.is_some();
+    if !model_is_loaded {
+        return Err(
+            "No model is loaded. Open Models, download a valid GGUF model, then select Use to activate it."
+                .to_string(),
+        );
+    }
+
     let settings = state.settings.read().await.clone();
     let port = settings
         .port
