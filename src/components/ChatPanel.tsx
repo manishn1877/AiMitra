@@ -40,7 +40,7 @@ export function ChatPanel() {
         setMessages(prev => [...prev, {
           id: crypto.randomUUID(),
           role: 'assistant',
-          content: currentResponse,
+          content: response.text || currentResponse,
           timestamp: new Date(),
           timing: response.timing,
         }])
