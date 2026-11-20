@@ -1781,8 +1781,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         let window = window_for_event.clone();
                         tauri::async_runtime::spawn(async move {
                             let settings = state.settings.read().await.clone();
-                            let actually_minimized =
-                                matches!(window.is_minimized(), Ok(true));
+                            let actually_minimized = matches!(window.is_minimized(), Ok(true));
 
                             if settings.unload_on_minimize && actually_minimized {
                                 let model_loaded = {
