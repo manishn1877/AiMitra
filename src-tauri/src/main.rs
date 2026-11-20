@@ -1011,8 +1011,8 @@ fn find_llama_binary() -> Option<PathBuf> {
             return Some(path);
         }
         // Also check in PATH
-        if which::which(candidate).is_ok() {
-            return Some(path);
+        if let Ok(resolved_path) = which::which(candidate) {
+            return Some(resolved_path);
         }
     }
 
