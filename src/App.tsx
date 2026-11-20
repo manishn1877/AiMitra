@@ -27,15 +27,15 @@ export function App() {
 
   const loadInitialState = async () => {
     try {
-      const [models, settings, systemTheme] = await Promise.all([
+      const [models, settings] = await Promise.all([
         invoke<string[]>('list_downloaded_models'),
         invoke<{ model: string; theme: string }>('get_settings'),
-        invoke<'light' | 'dark'>('get_system_theme'),
       ])
       setDownloadedModels(models)
       // A saved preference does not mean llama-server is running.
       setCurrentModel('')
       setTheme(settings.theme as 'light' | 'dark' | 'system')
+      const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
       applyTheme(settings.theme as 'light' | 'dark' | 'system', systemTheme)
     } catch (err) {
       console.error('Failed to load initial state:', err)
@@ -90,6 +90,24 @@ export function App() {
     const effectiveTheme = themeSetting === 'system' ? systemTheme : themeSetting
     document.documentElement.classList.toggle('dark', effectiveTheme === 'dark')
   }
+
+  // Keep the selected theme synchronized with Settings and the operating system.
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const syncSystemTheme = () => applyTheme(theme, media.matches ? 'dark' : 'light')
+    const onThemePreferenceChange = (event: Event) => {
+      const preference = (event as CustomEvent<'light' | 'dark' | 'system'>).detail
+      if (preference) setTheme(preference)
+    }
+
+    syncSystemTheme()
+    media.addEventListener('change', syncSystemTheme)
+    window.addEventListener('aimitra:theme-change', onThemePreferenceChange)
+    return () => {
+      media.removeEventListener('change', syncSystemTheme)
+      window.removeEventListener('aimitra:theme-change', onThemePreferenceChange)
+    }
+  }, [theme])
 
   const refreshDownloadedModels = async () => {
     try {
