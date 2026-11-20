@@ -33,7 +33,8 @@ export function App() {
         invoke<'light' | 'dark'>('get_system_theme'),
       ])
       setDownloadedModels(models)
-      setCurrentModel(settings.model || '')
+      // A saved preference does not mean llama-server is running.
+      setCurrentModel('')
       setTheme(settings.theme as 'light' | 'dark' | 'system')
       applyTheme(settings.theme as 'light' | 'dark' | 'system', systemTheme)
     } catch (err) {
@@ -71,8 +72,8 @@ export function App() {
       const unlistenComplete = await listen('model:download_complete', (event) => {
         const { modelId, success } = event.payload as { modelId: string; success: boolean }
         if (success) {
+          // Downloaded is not the same as loaded; activation is a separate step.
           refreshDownloadedModels()
-          setCurrentModel(modelId)
         }
       })
       return () => {
@@ -100,12 +101,18 @@ export function App() {
   }
 
   const handleModelChange = async (modelId: string) => {
+    // load_model unloads the previous model before starting the new one.
+    setCurrentModel('')
     try {
       await invoke('load_model', { modelId })
       setCurrentModel(modelId)
-      await invoke('save_settings', { settings: { model: modelId } })
+
+      // save_settings requires the complete Settings object.
+      const settings = await invoke<Record<string, unknown>>('get_settings')
+      await invoke('save_settings', { settings: { ...settings, model: modelId } })
     } catch (err) {
       console.error('Failed to load model:', err)
+      window.alert(`Could not activate this model: ${String(err)}`)
     }
   }
 
