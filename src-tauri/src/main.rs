@@ -668,7 +668,9 @@ async fn load_model(state: State<'_, Arc<AppState>>, model_id: String) -> Result
     let settings = state_arc.settings.read().await.clone();
 
     // Keep llama.cpp separate from AiMitra's API server (API: settings.port, llama: settings.port + 1).
-    let llama_port = settings.port.checked_add(1)
+    let llama_port = settings
+        .port
+        .checked_add(1)
         .ok_or("API port cannot be 65535 because llama-server uses the next port")?;
 
     // Start llama.cpp server process
@@ -806,7 +808,9 @@ async fn generate_completion(
     request: CompletionRequest,
 ) -> Result<CompletionResponse, String> {
     let settings = state.settings.read().await.clone();
-    let port = settings.port.checked_add(1)
+    let port = settings
+        .port
+        .checked_add(1)
         .ok_or("API port cannot be 65535 because llama-server uses the next port")?;
 
     let client = Client::new();
