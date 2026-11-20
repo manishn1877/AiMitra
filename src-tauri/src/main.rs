@@ -1766,22 +1766,30 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             });
             *state.idle_timer.lock() = Some(idle_handle);
 
-            // Window event handler for unload on minimize
+            // Unload only when the window is actually minimized, not whenever it
+            // loses focus (for example, when the user switches to Git Bash).
             let state_clone = state.inner().clone();
             if let Some(window) = app.get_webview_window("main") {
+                let window_for_event = window.clone();
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::Focused(focused) = event {
+                        if *focused {
+                            return;
+                        }
+
                         let state = state_clone.clone();
-                        let focused = *focused;
+                        let window = window_for_event.clone();
                         tauri::async_runtime::spawn(async move {
                             let settings = state.settings.read().await.clone();
-                            if settings.unload_on_minimize && !focused {
+                            let actually_minimized = matches!(window.is_minimized(), Ok(true));
+
+                            if settings.unload_on_minimize && actually_minimized {
                                 let model_loaded = {
                                     let ms = state.model_state.lock();
                                     ms.current_model.is_some()
                                 };
                                 if model_loaded {
-                                    info!("Auto-unloading model on window minimize");
+                                    info!("Auto-unloading model because the window was minimized");
                                     {
                                         let mut ms = state.model_state.lock();
                                         if let Some(mut process) = ms.llama_process.take() {
