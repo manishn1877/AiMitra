@@ -667,6 +667,10 @@ async fn load_model(state: State<'_, Arc<AppState>>, model_id: String) -> Result
     // Get settings - clone to avoid holding lock across await
     let settings = state_arc.settings.read().await.clone();
 
+    // Keep llama.cpp separate from AiMitra's API server (API: settings.port, llama: settings.port + 1).
+    let llama_port = settings.port.checked_add(1)
+        .ok_or("API port cannot be 65535 because llama-server uses the next port")?;
+
     // Start llama.cpp server process
     let (tx, _rx) = mpsc::unbounded_channel::<String>();
 
@@ -693,7 +697,7 @@ async fn load_model(state: State<'_, Arc<AppState>>, model_id: String) -> Result
         .arg("-b")
         .arg(settings.batch_size.to_string())
         .arg("--port")
-        .arg(settings.port.to_string())
+        .arg(llama_port.to_string())
         .arg("--host")
         .arg("127.0.0.1")
         .arg("--embedding") // Enable embeddings endpoint
@@ -741,7 +745,7 @@ async fn load_model(state: State<'_, Arc<AppState>>, model_id: String) -> Result
 
     // Test if server is responding
     let client = Client::new();
-    let test_url = format!("http://127.0.0.1:{}/health", settings.port);
+    let test_url = format!("http://127.0.0.1:{}/health", llama_port);
     let mut healthy = false;
     for _ in 0..10 {
         if client.get(&test_url).send().await.is_ok() {
@@ -802,7 +806,8 @@ async fn generate_completion(
     request: CompletionRequest,
 ) -> Result<CompletionResponse, String> {
     let settings = state.settings.read().await.clone();
-    let port = settings.port;
+    let port = settings.port.checked_add(1)
+        .ok_or("API port cannot be 65535 because llama-server uses the next port")?;
 
     let client = Client::new();
     let url = format!("http://127.0.0.1:{}/completion", port);
@@ -901,7 +906,8 @@ async fn generate_completion(
 #[tauri::command]
 async fn stop_generation(state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let settings = state.settings.read().await.clone();
-    let port = settings.port;
+    let port = settings.port.checked_add(1)
+        .ok_or("API port cannot be 65535 because llama-server uses the next port")?;
 
     let client = Client::new();
     let url = format!("http://127.0.0.1:{}/stop", port);
@@ -1071,7 +1077,7 @@ async fn completions_handler(
     Json(req): Json<CompletionRequest>,
 ) -> impl IntoResponse {
     let settings = state.settings.read().await.clone();
-    let port = settings.port;
+    let port = settings.port.saturating_add(1);
 
     let client = Client::new();
     let url = format!("http://127.0.0.1:{}/completion", port);
