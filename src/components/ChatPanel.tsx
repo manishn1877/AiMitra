@@ -37,16 +37,21 @@ export function ChatPanel() {
     },
     onComplete: (response) => {
       if (response.done) {
-        setMessages(prev => [...prev, {
-          id: crypto.randomUUID(),
-          role: 'assistant',
-          content: response.text || currentResponse,
-          timestamp: new Date(),
-          timing: response.timing,
-        }])
-        setCurrentResponse('')
-        setIsGenerating(false)
+        const answer = response.text || currentResponse
+        if (answer.trim()) {
+          setMessages(prev => [...prev, {
+            id: crypto.randomUUID(),
+            role: 'assistant',
+            content: answer,
+            timestamp: new Date(),
+            timing: response.timing,
+          }])
+        }
       }
+      // Always unlock the composer when the backend finishes, even if it
+      // returns an empty or incomplete response.
+      setCurrentResponse('')
+      setIsGenerating(false)
     },
     onError: (err) => {
       console.error('Generation error:', err)
@@ -230,7 +235,7 @@ export function ChatPanel() {
           />
           <div className="flex flex-col gap-2 justify-end">
             {isGenerating ? (
-              <button type="button" onClick={handleStop} className="btn-danger" disabled={!currentResponse}>
+              <button type="button" onClick={handleStop} className="btn-danger">
                 <X className="w-4 h-4" />
                 <span className="hidden sm:inline">Stop</span>
               </button>

@@ -688,6 +688,12 @@ async fn load_model(state: State<'_, Arc<AppState>>, model_id: String) -> Result
     if !model_path.exists() {
         return Err("Model file not found. Download it first.".to_string());
     }
+    if !is_valid_gguf_file(&model_path) {
+        return Err(
+            "This model file is incomplete or invalid. Delete it and download the model again."
+                .to_string(),
+        );
+    }
 
     // Get settings - clone to avoid holding lock across await
     let settings = state_arc.settings.read().await.clone();
@@ -767,24 +773,53 @@ async fn load_model(state: State<'_, Arc<AppState>>, model_id: String) -> Result
         });
     }
 
-    // Wait a bit for server to start
-    tokio::time::sleep(Duration::from_millis(500)).await;
-
-    // Test if server is responding
+    // Wait until llama-server reports that the model is actually ready.
+    // llama.cpp returns HTTP 503 while a model is loading; that is not success.
     let client = Client::new();
     let test_url = format!("http://127.0.0.1:{}/health", llama_port);
+    let deadline = Instant::now() + Duration::from_secs(90);
     let mut healthy = false;
-    for _ in 0..10 {
-        if client.get(&test_url).send().await.is_ok() {
-            healthy = true;
+    let mut last_health_error = "No health response received".to_string();
+
+    loop {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|e| format!("Could not check llama-server process: {e}"))?
+        {
+            return Err(format!(
+                "llama-server exited before the model became ready (process status: {status}). The model may be incompatible or your PC may not have enough free RAM."
+            ));
+        }
+
+        match client
+            .get(&test_url)
+            .timeout(Duration::from_secs(3))
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {
+                healthy = true;
+                break;
+            }
+            Ok(response) => {
+                last_health_error = format!("Health endpoint returned HTTP {}", response.status());
+            }
+            Err(error) => {
+                last_health_error = error.to_string();
+            }
+        }
+
+        if Instant::now() >= deadline {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
     if !healthy {
         child.kill().await.ok();
-        return Err("llama-server failed to start".to_string());
+        return Err(format!(
+            "llama-server did not finish loading within 90 seconds. {last_health_error}. Check that the GGUF model is complete and that enough RAM is available."
+        ));
     }
 
     // Update state - acquire lock only for state update
@@ -832,6 +867,14 @@ async fn generate_completion(
     state: State<'_, Arc<AppState>>,
     request: CompletionRequest,
 ) -> Result<CompletionResponse, String> {
+    let model_is_loaded = state.model_state.lock().current_model.is_some();
+    if !model_is_loaded {
+        return Err(
+            "No model is loaded. Open Models, download a valid GGUF model, then select Use to activate it."
+                .to_string(),
+        );
+    }
+
     let settings = state.settings.read().await.clone();
     let port = settings
         .port
