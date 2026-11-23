@@ -52,7 +52,7 @@ which = "8"
 rmcp = { version = "0.1", features = ["server", "client"] }
 
 # Protocol conversion - from deepseek-recipe
-schemars = { version = "0.8", features = ["derive"] }
+schemars = { version = "1.2", features = ["derive"] }
 tokio-stream = "0.1"
 
 # Configuration & validation
