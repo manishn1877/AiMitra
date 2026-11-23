@@ -44,7 +44,7 @@ once_cell = "1.19"
 # CLI-specific dependencies
 clap = { version = "4.5", features = ["derive", "env"] }
 console = "0.15"
-indicatif = "0.17"
+indicatif = "0.18"
 crossterm = "0.27"
 which = "8"
 
