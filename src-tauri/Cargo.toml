@@ -49,7 +49,7 @@ crossterm = "0.27"
 which = "8"
 
 # MCP (Model Context Protocol) - from claude-code
-rmcp = { version = "0.1", features = ["server", "client"] }
+rmcp = { version = "3.11", features = ["server", "client"] }
 
 # Protocol conversion - from deepseek-recipe
 schemars = { version = "0.8", features = ["derive"] }
