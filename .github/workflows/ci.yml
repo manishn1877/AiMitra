@@ -83,6 +83,9 @@ jobs:
       - name: Build backend
         run: cargo build --locked
 
+      - name: Run backend tests
+        run: cargo test --locked
+
   # Linux Tauri build
   tauri-linux:
     name: Tauri Build (Linux)
