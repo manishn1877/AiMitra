@@ -346,7 +346,7 @@ async fn get_system_stats(state: State<'_, Arc<AppState>>) -> Result<SystemStats
         (
             sys.used_memory(),
             sys.total_memory(),
-            sys.global_cpu_info().cpu_usage(),
+            sys.global_cpu_usage(),
             get_cpu_temperature(),
         )
     };
@@ -1569,7 +1569,7 @@ async fn thermal_monitor_loop(state: Arc<AppState>, handle: tauri::AppHandle) {
             sys.refresh_cpu_usage();
             sys.refresh_memory();
             (
-                sys.global_cpu_info().cpu_usage(),
+                sys.global_cpu_usage(),
                 get_cpu_temperature().unwrap_or(0.0),
             )
         };
@@ -1806,7 +1806,7 @@ async fn get_thermal_state(state: State<'_, Arc<AppState>>) -> Result<serde_json
         let mut sys = state_arc.system.lock();
         sys.refresh_cpu_usage();
         sys.refresh_memory();
-        sys.global_cpu_info().cpu_usage()
+        sys.global_cpu_usage()
     };
     let cpu_temp = get_cpu_temperature().unwrap_or(0.0);
     let thermal_state = determine_thermal_state(cpu_temp, cpu_usage);
@@ -1984,7 +1984,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         sys.refresh_cpu_usage();
                         let ram_used = sys.used_memory();
                         let ram_total = sys.total_memory();
-                        let cpu_usage = sys.global_cpu_info().cpu_usage();
+                        let cpu_usage = sys.global_cpu_usage();
                         let cpu_temperature = get_cpu_temperature();
                         (ram_used, ram_total, cpu_usage, cpu_temperature)
                     };
