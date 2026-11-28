@@ -30,11 +30,11 @@ export function ModelSelector({
 
   const handleDownload = async (model: ModelInfo) => {
     try {
-      // Combine primary URL and mirrors
-      const urls = [model.url, ...model.mirrors]
-      await invoke('download_model', { modelId: model.id, urls, filename: model.filename, expectedSha256: model.sha256 })
+      // The backend looks up the URL and filename from its own registry.
+      await invoke('download_model', { modelId: model.id })
     } catch (err) {
       console.error('Download failed:', err)
+      window.alert(`Could not start the download of ${model.name}: ${String(err)}`)
     }
   }
 

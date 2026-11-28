@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- Model downloads: replaced dead CodeQwen1.5 / Stable Code URLs (HTTP 401) with verified public repos (Qwen2.5-Coder 1.5B, DeepSeek Coder 1.3B via TheBloke, Phi-3 Mini official q4). Removed third-party proxy mirrors.
+- Downloads now write to `<file>.part`, check HTTP status, byte count, GGUF header and optional SHA-256, and only then rename into place. Failed re-downloads no longer delete an installed model. Stalls time out after 60 s; duplicate downloads are rejected.
+- The backend now looks up download URLs and filenames from its own registry instead of trusting the webview.
+- Added Rust regression tests for the 29-byte "Invalid username or password." case, HTTP 401, checksum mismatch and atomic publish.
+
 ## [0.1.0] - 2024-01-15
 
 ### Added
