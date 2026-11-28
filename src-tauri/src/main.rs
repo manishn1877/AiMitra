@@ -1348,6 +1348,205 @@ async fn cors_preflight() -> impl IntoResponse {
 }
 
 // ============================================================================
+// Code runner (user-initiated "Run" and "Open in VS Code" buttons)
+// ============================================================================
+
+const MAX_RUN_OUTPUT_BYTES: usize = 64 * 1024;
+const MAX_RUN_CODE_BYTES: usize = 256 * 1024;
+const RUN_TIMEOUT: Duration = Duration::from_secs(15);
+
+#[cfg(windows)]
+const PYTHON_CANDIDATES: &[&str] = &["python", "py"];
+#[cfg(not(windows))]
+const PYTHON_CANDIDATES: &[&str] = &["python3", "python"];
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RunResult {
+    stdout: String,
+    stderr: String,
+    exit_code: Option<i32>,
+    timed_out: bool,
+}
+
+/// Keep in sync with `runnableLanguage` in src/lib/messageParts.ts.
+fn normalize_language(language: &str) -> Option<&'static str> {
+    match language.trim().to_ascii_lowercase().as_str() {
+        "python" | "py" | "python3" => Some("python"),
+        "javascript" | "js" | "node" | "mjs" => Some("javascript"),
+        _ => None,
+    }
+}
+
+fn find_runner(language: &str) -> Option<PathBuf> {
+    let candidates: &[&str] = match language {
+        "python" => PYTHON_CANDIDATES,
+        _ => &["node"],
+    };
+    candidates.iter().find_map(|name| which::which(name).ok())
+}
+
+fn missing_runner_message(language: &str) -> String {
+    if language == "python" {
+        "Python was not found. Install it from python.org (tick \"Add python.exe to PATH\"), then restart AiMitra.".to_string()
+    } else {
+        "Node.js was not found. Install it from nodejs.org, then restart AiMitra.".to_string()
+    }
+}
+
+fn lossy_truncated(bytes: &[u8]) -> String {
+    if bytes.len() <= MAX_RUN_OUTPUT_BYTES {
+        String::from_utf8_lossy(bytes).into_owned()
+    } else {
+        format!(
+            "{}\n... output truncated ({} bytes in total)",
+            String::from_utf8_lossy(&bytes[..MAX_RUN_OUTPUT_BYTES]),
+            bytes.len()
+        )
+    }
+}
+
+async fn run_code_internal(
+    language: &str,
+    code: &str,
+    limit: Duration,
+) -> Result<RunResult, String> {
+    let lang = normalize_language(language).ok_or_else(|| {
+        format!("Running {language} code is not supported yet. Supported: Python and JavaScript.")
+    })?;
+    if code.trim().is_empty() {
+        return Err("There is no code to run.".to_string());
+    }
+    if code.len() > MAX_RUN_CODE_BYTES {
+        return Err("This code is too large to run from the chat.".to_string());
+    }
+    let runner = find_runner(lang).ok_or_else(|| missing_runner_message(lang))?;
+    let extension = if lang == "python" { "py" } else { "js" };
+
+    let dir = std::env::temp_dir()
+        .join("aimitra-run")
+        .join(uuid::Uuid::new_v4().to_string());
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("Could not create a temporary folder: {e}"))?;
+    let file = dir.join(format!("snippet.{extension}"));
+    tokio::fs::write(&file, code)
+        .await
+        .map_err(|e| format!("Could not write the temporary file: {e}"))?;
+
+    let mut cmd = tokio::process::Command::new(&runner);
+    cmd.arg(&file)
+        .current_dir(&dir)
+        .env("PYTHONIOENCODING", "utf-8")
+        .env("PYTHONUNBUFFERED", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+
+    let child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            let _ = tokio::fs::remove_dir_all(&dir).await;
+            return Err(format!("Could not start {}: {e}", runner.display()));
+        }
+    };
+
+    // If the timeout fires, the future (and the child it owns) is dropped and
+    // kill_on_drop terminates the process.
+    let outcome = tokio::time::timeout(limit, child.wait_with_output()).await;
+    let _ = tokio::fs::remove_dir_all(&dir).await;
+
+    match outcome {
+        Ok(Ok(output)) => Ok(RunResult {
+            stdout: lossy_truncated(&output.stdout),
+            stderr: lossy_truncated(&output.stderr),
+            exit_code: output.status.code(),
+            timed_out: false,
+        }),
+        Ok(Err(e)) => Err(format!("The program could not be run: {e}")),
+        Err(_) => Ok(RunResult {
+            stdout: String::new(),
+            stderr: format!(
+                "Stopped: the program was still running after {} seconds.",
+                limit.as_secs()
+            ),
+            exit_code: None,
+            timed_out: true,
+        }),
+    }
+}
+
+#[tauri::command]
+async fn run_code(language: String, code: String) -> Result<RunResult, String> {
+    run_code_internal(&language, &code, RUN_TIMEOUT).await
+}
+
+fn extension_for(language: &str) -> &'static str {
+    match language.trim().to_ascii_lowercase().as_str() {
+        "python" | "py" | "python3" => "py",
+        "javascript" | "js" | "node" | "mjs" => "js",
+        "typescript" | "ts" => "ts",
+        "tsx" => "tsx",
+        "jsx" => "jsx",
+        "html" => "html",
+        "css" => "css",
+        "json" => "json",
+        "rust" | "rs" => "rs",
+        "go" => "go",
+        "java" => "java",
+        "c" => "c",
+        "cpp" | "c++" => "cpp",
+        "csharp" | "cs" => "cs",
+        "bash" | "sh" | "shell" => "sh",
+        "powershell" | "ps1" => "ps1",
+        "sql" => "sql",
+        "yaml" | "yml" => "yml",
+        _ => "txt",
+    }
+}
+
+#[tauri::command]
+async fn open_in_editor(language: String, code: String) -> Result<String, String> {
+    if code.trim().is_empty() {
+        return Err("There is no code to open.".to_string());
+    }
+    let dir = dirs::document_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("AiMitra Snippets");
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let path = dir.join(format!("snippet-{stamp}.{}", extension_for(&language)));
+    tokio::fs::write(&path, code)
+        .await
+        .map_err(|e| format!("Could not save the file: {e}"))?;
+
+    match which::which("code") {
+        Ok(code_bin) => {
+            let mut cmd = tokio::process::Command::new(code_bin);
+            cmd.arg(&path);
+            #[cfg(windows)]
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            cmd.spawn().map_err(|e| {
+                format!("Saved {} but could not start VS Code: {e}", path.display())
+            })?;
+            Ok(format!("Opened in VS Code: {}", path.display()))
+        }
+        Err(_) => Ok(format!(
+            "VS Code (the \"code\" command) was not found, so the file was only saved: {}",
+            path.display()
+        )),
+    }
+}
+
+// ============================================================================
 // Thermal & Power Management
 // ============================================================================
 
@@ -1894,6 +2093,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             set_auto_unload,
             set_unload_on_minimize,
             set_max_cpu_percent,
+            run_code,
+            open_in_editor,
         ])
         .run(tauri::generate_context!())
         .map_err(|e| {
@@ -2141,5 +2342,68 @@ mod tests {
         );
         assert!(!partial_path(&target).exists());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn only_python_and_javascript_are_runnable() {
+        assert_eq!(normalize_language("Python"), Some("python"));
+        assert_eq!(normalize_language(" py "), Some("python"));
+        assert_eq!(normalize_language("JS"), Some("javascript"));
+        assert_eq!(normalize_language("rust"), None);
+        assert_eq!(normalize_language(""), None);
+    }
+
+    #[test]
+    fn editor_extension_is_never_taken_from_user_input_verbatim() {
+        assert_eq!(extension_for("python"), "py");
+        assert_eq!(extension_for("../../evil"), "txt");
+        assert_eq!(extension_for("exe"), "txt");
+    }
+
+    #[test]
+    fn long_output_is_truncated() {
+        let big = vec![b'a'; MAX_RUN_OUTPUT_BYTES + 10];
+        let text = lossy_truncated(&big);
+        assert!(text.contains("output truncated"));
+        assert!(text.len() < big.len() + 100);
+    }
+
+    #[tokio::test]
+    async fn unsupported_language_and_empty_code_are_rejected() {
+        let limit = Duration::from_secs(5);
+        assert!(run_code_internal("rust", "fn main() {}", limit)
+            .await
+            .is_err());
+        assert!(run_code_internal("python", "   ", limit).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn python_output_and_exit_code_are_captured() {
+        if find_runner("python").is_none() {
+            return; // Python is not installed on this machine.
+        }
+        let ok = run_code_internal("python", "print(1 + 1)", Duration::from_secs(20))
+            .await
+            .unwrap();
+        assert_eq!(ok.stdout.trim(), "2");
+        assert_eq!(ok.exit_code, Some(0));
+        assert!(!ok.timed_out);
+
+        let failed = run_code_internal("python", "raise SystemExit(3)", Duration::from_secs(20))
+            .await
+            .unwrap();
+        assert_eq!(failed.exit_code, Some(3));
+    }
+
+    #[tokio::test]
+    async fn runaway_program_is_stopped_by_the_timeout() {
+        if find_runner("python").is_none() {
+            return;
+        }
+        let result = run_code_internal("python", "while True: pass", Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert!(result.timed_out);
+        assert_eq!(result.exit_code, None);
     }
 }

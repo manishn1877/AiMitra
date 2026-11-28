@@ -7,6 +7,7 @@ import { ChatPanel } from './components/ChatPanel'
 import { ModelSelector } from './components/ModelSelector'
 import { SettingsPanel } from './components/SettingsPanel'
 import { StatusBar } from './components/StatusBar'
+import { ChatHistory } from './components/ChatHistory'
 
 type View = 'chat' | 'models' | 'settings'
 
@@ -200,6 +201,7 @@ export function App() {
               {sidebarOpen && <span className="font-medium">{item.label}</span>}
             </button>
           ))}
+          {sidebarOpen && <ChatHistory onOpen={() => setView('chat')} />}
         </nav>
 
         {/* Current Model Quick Info */}
@@ -234,7 +236,10 @@ export function App() {
       {/* Main Content */}
       <main className="flex-1 flex flex-col overflow-hidden">
         <div className="flex-1 flex flex-col overflow-hidden">
-          {view === 'chat' && <ChatPanel />}
+          {/* Stay mounted so the draft and any running reply survive switching pages. */}
+          <div className={cn('flex-1 min-h-0 flex-col overflow-hidden', view === 'chat' ? 'flex' : 'hidden')}>
+            <ChatPanel />
+          </div>
           {view === 'models' && (
             <div className="flex-1 overflow-y-auto p-6">
               <div className="max-w-3xl mx-auto">
