@@ -1568,10 +1568,7 @@ async fn thermal_monitor_loop(state: Arc<AppState>, handle: tauri::AppHandle) {
             let mut sys = state.system.lock();
             sys.refresh_cpu_usage();
             sys.refresh_memory();
-            (
-                sys.global_cpu_usage(),
-                get_cpu_temperature().unwrap_or(0.0),
-            )
+            (sys.global_cpu_usage(), get_cpu_temperature().unwrap_or(0.0))
         };
 
         // Determine thermal state
