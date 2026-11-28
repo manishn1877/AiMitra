@@ -210,11 +210,15 @@ struct AppState {
 }
 
 impl AppState {
-    fn new(models_dir: PathBuf) -> Self {
+    fn new(models_dir: PathBuf) -> Result<Self, String> {
         // Bounded channels to prevent memory leaks
         let (download_tx, _) = broadcast::channel(16);
 
-        Self {
+        // sysinfo 0.40 returns an error on operating systems it does not support.
+        let system = System::new_all()
+            .map_err(|e| format!("System information is not available on this OS: {e:?}"))?;
+
+        Ok(Self {
             settings: RwLock::new(Settings::default()),
             model_state: Mutex::new(ModelState {
                 current_model: None,
@@ -226,12 +230,12 @@ impl AppState {
             download_tx,
             active_downloads: Mutex::new(std::collections::HashSet::new()),
             api_server: Mutex::new(None),
-            system: parking_lot::Mutex::new(System::new_all()),
+            system: parking_lot::Mutex::new(system),
             last_tokens_per_second: RwLock::new(None),
             last_model_activity: RwLock::new(Instant::now()),
             thermal_monitor: Mutex::new(None),
             idle_timer: Mutex::new(None),
-        }
+        })
     }
 }
 
@@ -1929,7 +1933,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         .join("aimitra")
         .join("models");
 
-    let app_state = Arc::new(AppState::new(models_dir.clone()));
+    let app_state = Arc::new(AppState::new(models_dir.clone())?);
 
     // Load settings from disk (best-effort; the app can run with defaults)
     let state_clone = app_state.clone();
