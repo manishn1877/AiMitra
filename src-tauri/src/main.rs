@@ -2,12 +2,13 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use axum::{
-    body::Body,
+    body::{Body, Bytes},
     extract::State as AxumState,
     http::{header, StatusCode},
     response::{IntoResponse, Response},
@@ -32,7 +33,7 @@ use tracing::{debug, error, info, warn};
 // ============================================================================
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 struct Settings {
     model: String,
     #[serde(alias = "context_length")]
@@ -206,6 +207,7 @@ struct AppState {
     last_model_activity: RwLock<Instant>,
     thermal_monitor: parking_lot::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>, // Thermal monitoring task
     idle_timer: parking_lot::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>, // Auto-unload timer
+    cancel_generation: AtomicBool,
 }
 
 impl AppState {
@@ -229,8 +231,50 @@ impl AppState {
             last_model_activity: RwLock::new(Instant::now()),
             thermal_monitor: Mutex::new(None),
             idle_timer: Mutex::new(None),
+            cancel_generation: AtomicBool::new(false),
         }
     }
+}
+
+// ============================================================================
+// HTTP / process helpers
+// ============================================================================
+
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Spawn helper programs without flashing a console window (Windows GUI app).
+#[cfg(target_os = "windows")]
+fn hidden_command(program: &str) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    let mut cmd = std::process::Command::new(program);
+    cmd.creation_flags(CREATE_NO_WINDOW);
+    cmd
+}
+
+/// HTTP client for talking to the local llama-server and AiMitra's own API.
+///
+/// It must never use a system/corporate/VPN proxy: on Windows reqwest picks up the
+/// system proxy, and a proxy answers requests for 127.0.0.1 with 403/404 errors.
+fn local_client() -> Result<Client, String> {
+    Client::builder()
+        .no_proxy()
+        .connect_timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| format!("Could not create HTTP client: {e}"))
+}
+
+fn json_error(status: StatusCode, message: &str) -> Response {
+    let body = serde_json::json!({
+        "error": { "message": message, "type": "aimitra_error" }
+    })
+    .to_string();
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        .body(Body::from(body))
+        .unwrap_or_else(|_| status.into_response())
 }
 
 // ============================================================================
@@ -240,19 +284,18 @@ impl AppState {
 fn get_model_registry() -> Vec<ModelInfo> {
     vec![
         ModelInfo {
-            id: "codeqwen-1.5b".to_string(),
-            name: "CodeQwen 1.5B".to_string(),
+            id: "qwen2.5-coder-1.5b".to_string(),
+            name: "Qwen2.5 Coder 1.5B".to_string(),
             description: "Fast, efficient code model from Alibaba. Great for Python, JS, TS, Java.".to_string(),
-            size_gb: 1.1,
+            size_gb: 1.12,
             ram_required_gb: 3.0,
-            url: "https://huggingface.co/Qwen/CodeQwen1.5-1.5B-GGUF/resolve/main/codeqwen1.5-1.5b-q4_k_m.gguf".to_string(),
+            url: "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf".to_string(),
             mirrors: vec![
-                "https://hf-mirror.com/Qwen/CodeQwen1.5-1.5B-GGUF/resolve/main/codeqwen1.5-1.5b-q4_k_m.gguf".to_string(),
-                "https://mirror.ghproxy.com/https://huggingface.co/Qwen/CodeQwen1.5-1.5B-GGUF/resolve/main/codeqwen1.5-1.5b-q4_k_m.gguf".to_string(),
+                "https://hf-mirror.com/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf".to_string(),
             ],
             sha256: "".to_string(),
-            filename: "codeqwen1.5-1.5b-q4_k_m.gguf".to_string(),
-            context_length: 8192,
+            filename: "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf".to_string(),
+            context_length: 32768,
             tags: vec!["code".to_string(), "fast".to_string(), "low-ram".to_string()],
             recommended: true,
         },
@@ -260,15 +303,14 @@ fn get_model_registry() -> Vec<ModelInfo> {
             id: "deepseek-coder-1.3b".to_string(),
             name: "DeepSeek Coder 1.3B".to_string(),
             description: "Strong code completion from DeepSeek. Excellent for infilling.".to_string(),
-            size_gb: 0.9,
+            size_gb: 0.87,
             ram_required_gb: 2.5,
-            url: "https://huggingface.co/deepseek-ai/deepseek-coder-1.3b-instruct-GGUF/resolve/main/deepseek-coder-1.3b-instruct-q4_k_m.gguf".to_string(),
+            url: "https://huggingface.co/TheBloke/deepseek-coder-1.3b-instruct-GGUF/resolve/main/deepseek-coder-1.3b-instruct.Q4_K_M.gguf".to_string(),
             mirrors: vec![
-                "https://hf-mirror.com/deepseek-ai/deepseek-coder-1.3b-instruct-GGUF/resolve/main/deepseek-coder-1.3b-instruct-q4_k_m.gguf".to_string(),
-                "https://mirror.ghproxy.com/https://huggingface.co/deepseek-ai/deepseek-coder-1.3b-instruct-GGUF/resolve/main/deepseek-coder-1.3b-instruct-q4_k_m.gguf".to_string(),
+                "https://hf-mirror.com/TheBloke/deepseek-coder-1.3b-instruct-GGUF/resolve/main/deepseek-coder-1.3b-instruct.Q4_K_M.gguf".to_string(),
             ],
             sha256: "".to_string(),
-            filename: "deepseek-coder-1.3b-instruct-q4_k_m.gguf".to_string(),
+            filename: "deepseek-coder-1.3b-instruct.Q4_K_M.gguf".to_string(),
             context_length: 16384,
             tags: vec!["code".to_string(), "infilling".to_string(), "low-ram".to_string()],
             recommended: true,
@@ -277,15 +319,14 @@ fn get_model_registry() -> Vec<ModelInfo> {
             id: "phi-3-mini".to_string(),
             name: "Phi-3 Mini 4K".to_string(),
             description: "Microsoft's small but mighty model. Best reasoning in class.".to_string(),
-            size_gb: 2.3,
+            size_gb: 2.39,
             ram_required_gb: 4.0,
-            url: "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4_k_m.gguf".to_string(),
+            url: "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf".to_string(),
             mirrors: vec![
-                "https://hf-mirror.com/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4_k_m.gguf".to_string(),
-                "https://mirror.ghproxy.com/https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4_k_m.gguf".to_string(),
+                "https://hf-mirror.com/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf".to_string(),
             ],
             sha256: "".to_string(),
-            filename: "phi-3-mini-4k-instruct-q4_k_m.gguf".to_string(),
+            filename: "Phi-3-mini-4k-instruct-q4.gguf".to_string(),
             context_length: 4096,
             tags: vec!["reasoning".to_string(), "chat".to_string(), "general".to_string()],
             recommended: true,
@@ -294,15 +335,14 @@ fn get_model_registry() -> Vec<ModelInfo> {
             id: "stable-code-3b".to_string(),
             name: "Stable Code 3B".to_string(),
             description: "Stability AI's code model. Good balance of size and capability.".to_string(),
-            size_gb: 1.8,
+            size_gb: 1.71,
             ram_required_gb: 3.5,
-            url: "https://huggingface.co/stabilityai/stable-code-3b-GGUF/resolve/main/stable-code-3b-q4_k_m.gguf".to_string(),
+            url: "https://huggingface.co/TheBloke/stable-code-3b-GGUF/resolve/main/stable-code-3b.Q4_K_M.gguf".to_string(),
             mirrors: vec![
-                "https://hf-mirror.com/stabilityai/stable-code-3b-GGUF/resolve/main/stable-code-3b-q4_k_m.gguf".to_string(),
-                "https://mirror.ghproxy.com/https://huggingface.co/stabilityai/stable-code-3b-GGUF/resolve/main/stable-code-3b-q4_k_m.gguf".to_string(),
+                "https://hf-mirror.com/TheBloke/stable-code-3b-GGUF/resolve/main/stable-code-3b.Q4_K_M.gguf".to_string(),
             ],
             sha256: "".to_string(),
-            filename: "stable-code-3b-q4_k_m.gguf".to_string(),
+            filename: "stable-code-3b.Q4_K_M.gguf".to_string(),
             context_length: 16384,
             tags: vec!["code".to_string(), "fill-in-middle".to_string()],
             recommended: false,
@@ -321,11 +361,17 @@ async fn get_settings(state: State<'_, Arc<AppState>>) -> Result<Settings, Strin
 
 #[tauri::command]
 async fn save_settings(state: State<'_, Arc<AppState>>, settings: Settings) -> Result<(), String> {
+    let previous = state.settings.read().await.clone();
     *state.settings.write().await = settings.clone();
 
-    // Restart API server if port changed
+    // Only touch the API server when it actually needs to change. Restarting it on every
+    // save used to race with the old listener and could leave the API dead.
+    let api_changed = previous.enable_api != settings.enable_api || previous.port != settings.port;
+    let server_missing = state.api_server.lock().is_none();
     if settings.enable_api {
-        restart_api_server(&state, settings.port).await?;
+        if api_changed || server_missing {
+            restart_api_server(&state, settings.port).await?;
+        }
     } else {
         stop_api_server(&state).await?;
     }
@@ -399,10 +445,12 @@ async fn get_system_stats(state: State<'_, Arc<AppState>>) -> Result<SystemStats
 
 #[tauri::command]
 async fn check_internet(_state: State<'_, Arc<AppState>>) -> Result<bool, String> {
-    match reqwest::get("https://huggingface.co").await {
-        Ok(resp) => Ok(resp.status().is_success()),
-        Err(_) => Ok(false),
-    }
+    let client = Client::builder()
+        .timeout(Duration::from_secs(4))
+        .build()
+        .map_err(|e| e.to_string())?;
+    // Any HTTP response (even 403 from a proxy) proves the network is reachable.
+    Ok(client.head("https://huggingface.co").send().await.is_ok())
 }
 
 #[tauri::command]
@@ -537,7 +585,12 @@ async fn download_model_internal(
 ) -> Result<()> {
     std::fs::create_dir_all(models_dir).context("Create models dir")?;
 
-    let client = Client::new();
+    // Several hosts/mirrors answer 403 to requests that carry no User-Agent.
+    let client = Client::builder()
+        .user_agent(concat!("AiMitra/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(Duration::from_secs(20))
+        .build()
+        .context("Create HTTP client")?;
     let file_path = models_dir.join(filename);
 
     // Try each URL (primary + mirrors) until one works
@@ -673,9 +726,10 @@ async fn delete_model(state: State<'_, Arc<AppState>>, model_id: String) -> Resu
 
 #[tauri::command]
 async fn load_model(state: State<'_, Arc<AppState>>, model_id: String) -> Result<(), String> {
-    // Extract Arc early to avoid Send issues
-    let state_arc = state.inner().clone();
+    load_model_internal(state.inner().clone(), model_id).await
+}
 
+async fn load_model_internal(state_arc: Arc<AppState>, model_id: String) -> Result<(), String> {
     // Unload current model first
     unload_model_internal(state_arc.clone()).await?;
 
@@ -684,7 +738,9 @@ async fn load_model(state: State<'_, Arc<AppState>>, model_id: String) -> Result
     let model_info = registry
         .iter()
         .find(|m| m.id == model_id)
-        .ok_or("Model not in registry")?;
+        .ok_or_else(|| {
+            format!("Model '{model_id}' is not in the model list. Open Models and pick one of the listed models.")
+        })?;
     let model_path = state_arc.models_dir.join(&model_info.filename);
 
     if !model_path.exists() {
@@ -709,8 +765,10 @@ async fn load_model(state: State<'_, Arc<AppState>>, model_id: String) -> Result
     // Start llama.cpp server process
     let (tx, _rx) = mpsc::unbounded_channel::<String>();
 
-    let llama_bin =
-        find_llama_binary().ok_or("llama-server not found. Build llama.cpp or install Ollama.")?;
+    let llama_bin = find_llama_binary().ok_or(
+        "llama-server was not found. Put llama-server.exe in src-tauri\\resources (setup-windows.ps1 does this), \
+         next to AiMitra.exe, or on your PATH, or set the AIMITRA_LLAMA_SERVER environment variable to its full path.",
+    )?;
 
     let mut cmd = tokio::process::Command::new(&llama_bin);
     cmd.arg("-m")
@@ -720,14 +778,11 @@ async fn load_model(state: State<'_, Arc<AppState>>, model_id: String) -> Result
         .arg("--temp")
         .arg(settings.temperature.to_string())
         .arg("--top-p")
-        .arg(settings.top_p.to_string())
-        .arg("-t")
-        .arg(if settings.threads > 0 {
-            settings.threads.to_string()
-        } else {
-            "0".to_string()
-        })
-        .arg("-ngl")
+        .arg(settings.top_p.to_string());
+    if settings.threads > 0 {
+        cmd.arg("-t").arg(settings.threads.to_string());
+    }
+    cmd.arg("-ngl")
         .arg(settings.gpu_layers.to_string())
         .arg("-b")
         .arg(settings.batch_size.to_string())
@@ -737,12 +792,21 @@ async fn load_model(state: State<'_, Arc<AppState>>, model_id: String) -> Result
         .arg("127.0.0.1")
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .stdin(std::process::Stdio::piped());
+        .stdin(std::process::Stdio::null())
+        // Never leave an orphaned llama-server (holding the port and RAM) behind.
+        .kill_on_drop(true);
+    #[cfg(target_os = "windows")]
+    {
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("Failed to start llama-server: {}", e))?;
-    let _child_pid = child.id();
+    let mut child = cmd.spawn().map_err(|e| {
+        format!(
+            "Failed to start llama-server ({}): {}",
+            llama_bin.display(),
+            e
+        )
+    })?;
 
     // Monitor stdout/stderr
     if let Some(stdout) = child.stdout.take() {
@@ -762,21 +826,30 @@ async fn load_model(state: State<'_, Arc<AppState>>, model_id: String) -> Result
         });
     }
 
+    // Keep the last stderr lines so a failed start can show the real reason.
+    let stderr_tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     if let Some(stderr) = child.stderr.take() {
-        let _state_arc_stderr = state_arc.clone();
+        let tail = stderr_tail.clone();
         tokio::spawn(async move {
             use tokio::io::{AsyncBufReadExt, BufReader};
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 debug!("llama-server: {}", line);
+                {
+                    let mut buf = tail.lock();
+                    buf.push(line);
+                    if buf.len() > 15 {
+                        buf.remove(0);
+                    }
+                }
             }
         });
     }
 
     // Wait until llama-server reports that the model is actually ready.
     // llama.cpp returns HTTP 503 while a model is loading; that is not success.
-    let client = Client::new();
+    let client = local_client()?;
     let test_url = format!("http://127.0.0.1:{}/health", llama_port);
     let deadline = Instant::now() + Duration::from_secs(90);
     let mut healthy = false;
@@ -787,8 +860,15 @@ async fn load_model(state: State<'_, Arc<AppState>>, model_id: String) -> Result
             .try_wait()
             .map_err(|e| format!("Could not check llama-server process: {e}"))?
         {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let output = stderr_tail.lock().join("\n");
+            let details = if output.is_empty() {
+                String::new()
+            } else {
+                format!("\n\nllama-server output:\n{output}")
+            };
             return Err(format!(
-                "llama-server exited before the model became ready (process status: {status}). The model may be incompatible or your PC may not have enough free RAM."
+                "llama-server exited before the model became ready (process status: {status}). The model may be incompatible, the port may be in use, or your PC may not have enough free RAM.{details}"
             ));
         }
 
@@ -818,8 +898,9 @@ async fn load_model(state: State<'_, Arc<AppState>>, model_id: String) -> Result
 
     if !healthy {
         child.kill().await.ok();
+        let output = stderr_tail.lock().join("\n");
         return Err(format!(
-            "llama-server did not finish loading within 90 seconds. {last_health_error}. Check that the GGUF model is complete and that enough RAM is available."
+            "llama-server did not finish loading within 90 seconds. {last_health_error}. Check that the GGUF model is complete and that enough RAM is available.\n{output}"
         ));
     }
 
@@ -868,26 +949,38 @@ async fn unload_model_internal(state_arc: Arc<AppState>) -> Result<(), String> {
 
 #[tauri::command]
 async fn generate_completion(
+    app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
     request: CompletionRequest,
 ) -> Result<CompletionResponse, String> {
-    let model_is_loaded = state.model_state.lock().current_model.is_some();
+    let state_arc = state.inner().clone();
+
+    let model_is_loaded = state_arc.model_state.lock().current_model.is_some();
     if !model_is_loaded {
-        return Err(
-            "No model is loaded. Open Models, download a valid GGUF model, then select Use to activate it."
-                .to_string(),
-        );
+        // The model may have been unloaded (idle timeout, minimize) or the app was just
+        // restarted. Reload the last used model instead of failing with "no response".
+        let preferred = state_arc.settings.read().await.model.clone();
+        if preferred.trim().is_empty() {
+            return Err(
+                "No model is loaded. Open Models, download a model, then select Use to activate it."
+                    .to_string(),
+            );
+        }
+        load_model_internal(state_arc.clone(), preferred)
+            .await
+            .map_err(|e| format!("No model is loaded and reloading your last model failed: {e}"))?;
     }
 
-    *state.last_model_activity.write().await = Instant::now();
+    state_arc.cancel_generation.store(false, Ordering::SeqCst);
+    *state_arc.last_model_activity.write().await = Instant::now();
 
-    let settings = state.settings.read().await.clone();
+    let settings = state_arc.settings.read().await.clone();
     let port = settings
         .port
         .checked_add(1)
         .ok_or("API port cannot be 65535 because llama-server uses the next port")?;
 
-    let client = Client::new();
+    let client = local_client()?;
     let url = format!("http://127.0.0.1:{}/completion", port);
     let stream = request.stream.unwrap_or(true);
 
@@ -906,10 +999,15 @@ async fn generate_completion(
         .json(&payload)
         .send()
         .await
-        .map_err(|e| format!("Request failed: {}. Is a model loaded?", e))?;
+        .map_err(|e| format!("Could not reach llama-server at {url}: {e}"))?;
 
     if !response.status().is_success() {
-        return Err(format!("Server error: {}", response.status()));
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let body: String = body.chars().take(300).collect();
+        return Err(format!(
+            "llama-server returned HTTP {status} for {url}: {body}"
+        ));
     }
 
     let elapsed = start.elapsed().as_millis() as u64;
@@ -929,15 +1027,17 @@ async fn generate_completion(
         });
     }
 
-    // Stream: collect the full response from llama-server (SSE) and return it.
-    // The frontend receives the complete text via the invoke result.
-    use futures::StreamExt;
+    // Stream: forward every token to the UI as it arrives and also return the full text.
     let mut body_stream = response.bytes_stream();
     let mut buffer = String::new();
     let mut full_text = String::new();
     let mut tokens_predicted: Option<u32> = None;
+    let mut server_tps: Option<f32> = None;
 
     while let Some(chunk) = body_stream.next().await {
+        if state_arc.cancel_generation.load(Ordering::SeqCst) {
+            break;
+        }
         let chunk = chunk.map_err(|e| format!("Stream error: {}", e))?;
         buffer.push_str(&String::from_utf8_lossy(&chunk));
         while let Some(pos) = buffer.find('\n') {
@@ -952,23 +1052,31 @@ async fn generate_completion(
             }
             if let Ok(val) = serde_json::from_str::<serde_json::Value>(data) {
                 if let Some(content) = val["content"].as_str() {
-                    full_text.push_str(content);
+                    if !content.is_empty() {
+                        full_text.push_str(content);
+                        let _ = app.emit("llama:token", content);
+                    }
                 }
                 if val["stop"].as_bool() == Some(true) {
                     tokens_predicted = val["tokens_predicted"].as_u64().map(|v| v as u32);
+                    server_tps = val["timings"]["predicted_per_second"]
+                        .as_f64()
+                        .map(|v| v as f32);
                 }
             }
         }
     }
 
     let generation_ms = start.elapsed().as_millis() as u64;
-    let tps = if generation_ms > 0 {
-        (full_text.split_whitespace().count() as f32) / (generation_ms as f32 / 1000.0)
-    } else {
-        0.0
-    };
-    *state.last_tokens_per_second.write().await = Some(tps);
-    *state.last_model_activity.write().await = Instant::now();
+    let tps = server_tps.unwrap_or_else(|| {
+        if generation_ms > 0 {
+            (full_text.split_whitespace().count() as f32) / (generation_ms as f32 / 1000.0)
+        } else {
+            0.0
+        }
+    });
+    *state_arc.last_tokens_per_second.write().await = Some(tps);
+    *state_arc.last_model_activity.write().await = Instant::now();
 
     Ok(CompletionResponse {
         text: full_text,
@@ -984,16 +1092,9 @@ async fn generate_completion(
 
 #[tauri::command]
 async fn stop_generation(state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    let settings = state.settings.read().await.clone();
-    let port = settings
-        .port
-        .checked_add(1)
-        .ok_or("API port cannot be 65535 because llama-server uses the next port")?;
-
-    let client = Client::new();
-    let url = format!("http://127.0.0.1:{}/stop", port);
-    client.post(&url).send().await.ok();
-
+    // llama-server has no /stop endpoint (it answered 404). Instead flag the running
+    // request; dropping the HTTP stream makes llama-server stop generating.
+    state.cancel_generation.store(true, Ordering::SeqCst);
     Ok(())
 }
 
@@ -1002,28 +1103,60 @@ async fn stop_generation(state: State<'_, Arc<AppState>>) -> Result<(), String> 
 // ============================================================================
 
 fn find_llama_binary() -> Option<PathBuf> {
-    // Check common locations
-    let candidates = vec![
-        "llama-server",
-        "llama-server.exe",
-        "./llama.cpp/build/bin/llama-server",
-        "./llama.cpp/build/bin/Release/llama-server.exe",
-        "C:/Program Files/llama.cpp/llama-server.exe",
-        "/usr/local/bin/llama-server",
-    ];
-
-    for candidate in candidates {
-        let path = PathBuf::from(candidate);
-        if path.exists() {
+    // 1. Explicit override
+    if let Ok(custom) = std::env::var("AIMITRA_LLAMA_SERVER") {
+        let path = PathBuf::from(custom.trim().trim_matches('"'));
+        if path.is_file() {
             return Some(path);
-        }
-        // Also check in PATH
-        if let Ok(resolved_path) = which::which(candidate) {
-            return Some(resolved_path);
         }
     }
 
-    None
+    let exe_name = if cfg!(target_os = "windows") {
+        "llama-server.exe"
+    } else {
+        "llama-server"
+    };
+
+    // 2. Places the setup script / installer put it, relative to the app and the cwd.
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            dirs.push(dir.to_path_buf());
+            dirs.push(dir.join("resources"));
+            dirs.push(dir.join("bin"));
+            // Dev build: src-tauri/target/debug/aimitra(.exe) -> src-tauri/resources
+            if let Some(src_tauri) = dir.parent().and_then(|p| p.parent()) {
+                dirs.push(src_tauri.join("resources"));
+            }
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        dirs.push(cwd.join("resources"));
+        dirs.push(cwd.join("src-tauri").join("resources"));
+        dirs.push(
+            cwd.join("llama.cpp")
+                .join("build")
+                .join("bin")
+                .join("Release"),
+        );
+        dirs.push(cwd.join("llama.cpp").join("build").join("bin"));
+        dirs.push(cwd);
+    }
+    if let Some(data) = data_dir() {
+        dirs.push(data.join("aimitra").join("bin"));
+    }
+    dirs.push(PathBuf::from("C:/Program Files/llama.cpp"));
+    dirs.push(PathBuf::from("/usr/local/bin"));
+
+    for dir in dirs {
+        let candidate = dir.join(exe_name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+
+    // 3. PATH
+    which::which(exe_name).ok()
 }
 
 fn parse_tokens_per_second(line: &str) -> Option<f32> {
@@ -1042,13 +1175,18 @@ fn detect_gpu() -> Option<String> {
     // Simplified GPU detection
     #[cfg(target_os = "windows")]
     {
-        use std::process::Command;
-        if let Ok(output) = Command::new("wmic")
-            .args(["path", "win32_VideoController", "get", "name"])
+        // wmic is removed from current Windows 11 builds, so ask CIM through PowerShell.
+        if let Ok(output) = hidden_command("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Get-CimInstance Win32_VideoController).Name",
+            ])
             .output()
         {
             let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines().skip(1) {
+            for line in stdout.lines() {
                 let line = line.trim();
                 if !line.is_empty() && !line.contains("Microsoft") {
                     return Some(line.to_string());
@@ -1086,16 +1224,18 @@ async fn save_settings_to_disk(_state: &Arc<AppState>, settings: &Settings) -> R
     Ok(())
 }
 
-async fn load_settings_from_disk(state: &Arc<AppState>) -> Result<(), String> {
-    let config_dir = dirs::config_dir().ok_or("No config dir")?.join("aimitra");
-    let settings_path = config_dir.join("settings.json");
-    if settings_path.exists() {
-        let json = tokio::fs::read_to_string(settings_path)
-            .await
-            .map_err(|e| e.to_string())?;
-        let settings: Settings = serde_json::from_str(&json).map_err(|e| e.to_string())?;
-        *state.settings.write().await = settings;
+fn load_settings_sync(state: &Arc<AppState>) -> Result<(), String> {
+    let settings_path = dirs::config_dir()
+        .ok_or("No config dir")?
+        .join("aimitra")
+        .join("settings.json");
+    if !settings_path.exists() {
+        return Ok(());
     }
+    let json = std::fs::read_to_string(&settings_path).map_err(|e| e.to_string())?;
+    let settings: Settings = serde_json::from_str(&json)
+        .map_err(|e| format!("Invalid settings file {}: {e}", settings_path.display()))?;
+    *state.settings.blocking_write() = settings;
     Ok(())
 }
 
@@ -1130,17 +1270,35 @@ async fn run_api_server(state: Arc<AppState>, port: u16) {
             "/v1/completions",
             post(completions_handler).options(cors_preflight),
         )
+        .route(
+            "/v1/chat/completions",
+            post(chat_completions_handler).options(cors_preflight),
+        )
         .route("/v1/models", get(models_handler).options(cors_preflight))
+        .fallback(not_found_handler)
         .with_state(state);
 
     let addr = format!("127.0.0.1:{}", port);
     info!("Starting API server on {}", addr);
 
-    let listener = match tokio::net::TcpListener::bind(&addr).await {
-        Ok(l) => l,
-        Err(e) => {
-            error!("Failed to bind API server: {}", e);
-            return;
+    // After a settings save the previous listener can still hold the port for a moment,
+    // so retry briefly instead of silently leaving the API dead.
+    let mut attempt = 0;
+    let listener = loop {
+        match tokio::net::TcpListener::bind(&addr).await {
+            Ok(l) => break l,
+            Err(e) if attempt < 10 => {
+                attempt += 1;
+                warn!("API port {} busy ({}), retry {}/10", port, e, attempt);
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            Err(e) => {
+                error!(
+                    "Failed to bind API server on {}: {} (is Ollama or another app using this port?)",
+                    addr, e
+                );
+                return;
+            }
         }
     };
 
@@ -1153,96 +1311,96 @@ async fn health_check() -> impl IntoResponse {
     Json(serde_json::json!({ "status": "ok" }))
 }
 
-async fn completions_handler(
+async fn not_found_handler() -> Response {
+    json_error(
+        StatusCode::NOT_FOUND,
+        "Unknown endpoint. Available: GET /health, GET /v1/models, POST /v1/completions, POST /v1/chat/completions",
+    )
+}
+
+async fn completions_handler(AxumState(state): AxumState<Arc<AppState>>, body: Bytes) -> Response {
+    proxy_to_llama(state, "/v1/completions", body).await
+}
+
+async fn chat_completions_handler(
     AxumState(state): AxumState<Arc<AppState>>,
-    Json(req): Json<CompletionRequest>,
-) -> impl IntoResponse {
-    let settings = state.settings.read().await.clone();
-    let port = settings.port.saturating_add(1);
+    body: Bytes,
+) -> Response {
+    proxy_to_llama(state, "/v1/chat/completions", body).await
+}
 
-    let client = Client::new();
-    let url = format!("http://127.0.0.1:{}/completion", port);
+/// Forward an OpenAI-style request to llama-server, which speaks the same protocol.
+async fn proxy_to_llama(state: Arc<AppState>, path: &str, body: Bytes) -> Response {
+    let model_loaded = state.model_state.lock().current_model.is_some();
+    if !model_loaded {
+        return json_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "No model is loaded. Open AiMitra, go to Models and click Use on a downloaded model.",
+        );
+    }
+    *state.last_model_activity.write().await = Instant::now();
 
-    let payload = serde_json::json!({
-        "prompt": req.prompt,
-        "n_predict": req.max_tokens.unwrap_or(settings.max_tokens),
-        "temperature": req.temperature.unwrap_or(settings.temperature),
-        "top_p": req.top_p.unwrap_or(settings.top_p),
-        "stop": req.stop.unwrap_or_default(),
-        "stream": req.stream.unwrap_or(false),
-    });
+    let port = state.settings.read().await.port.saturating_add(1);
+    let client = match local_client() {
+        Ok(c) => c,
+        Err(e) => return json_error(StatusCode::INTERNAL_SERVER_ERROR, &e),
+    };
+    let url = format!("http://127.0.0.1:{}{}", port, path);
 
-    match client.post(&url).json(&payload).send().await {
+    match client
+        .post(&url)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(body)
+        .send()
+        .await
+    {
         Ok(resp) => {
             let status = resp.status();
-            let headers = resp.headers().clone();
-
-            // Check if streaming response
-            let is_streaming = headers
-                .get("content-type")
+            let content_type = resp.headers().get(header::CONTENT_TYPE).cloned();
+            let is_streaming = content_type
+                .as_ref()
                 .and_then(|v| v.to_str().ok())
                 .map(|ct| ct.contains("text/event-stream"))
                 .unwrap_or(false);
 
+            let mut builder = Response::builder()
+                .status(status)
+                .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+                .header(header::ACCESS_CONTROL_ALLOW_METHODS, "POST, GET, OPTIONS")
+                .header(
+                    header::ACCESS_CONTROL_ALLOW_HEADERS,
+                    "Content-Type, Authorization",
+                );
+            if let Some(ct) = content_type {
+                builder = builder.header(header::CONTENT_TYPE, ct);
+            }
+
             if is_streaming {
-                // Stream the response body
-                let stream = resp.bytes_stream();
-                let mut response_builder = Response::builder().status(status);
-
-                // Copy relevant headers
-                for (key, value) in headers.iter() {
-                    if key == "content-type" || key == "cache-control" || key == "connection" {
-                        response_builder = response_builder.header(key, value);
-                    }
-                }
-                // Ensure CORS headers
-                response_builder = response_builder
-                    .header("Access-Control-Allow-Origin", "*")
-                    .header("Access-Control-Allow-Methods", "POST, OPTIONS")
-                    .header(
-                        "Access-Control-Allow-Headers",
-                        "Content-Type, Authorization",
-                    );
-
-                response_builder
-                    .body(Body::from_stream(stream))
+                builder
+                    .header(header::CACHE_CONTROL, "no-cache")
+                    .body(Body::from_stream(resp.bytes_stream()))
                     .unwrap_or_else(|_| {
-                        (
+                        json_error(
                             StatusCode::INTERNAL_SERVER_ERROR,
                             "Failed to create streaming response",
                         )
-                            .into_response()
                     })
             } else {
-                // Non-streaming: buffer and return
-                let body = resp.bytes().await.unwrap_or_default();
-                let mut response_builder = Response::builder().status(status);
-                response_builder = response_builder
-                    .header("Access-Control-Allow-Origin", "*")
-                    .header("Access-Control-Allow-Methods", "POST, OPTIONS")
-                    .header(
-                        "Access-Control-Allow-Headers",
-                        "Content-Type, Authorization",
-                    );
-                response_builder.body(Body::from(body)).unwrap_or_else(|_| {
-                    (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "Failed to create response",
-                    )
-                        .into_response()
-                })
+                match resp.bytes().await {
+                    Ok(bytes) => builder.body(Body::from(bytes)).unwrap_or_else(|_| {
+                        json_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Failed to create response",
+                        )
+                    }),
+                    Err(e) => json_error(StatusCode::BAD_GATEWAY, &e.to_string()),
+                }
             }
         }
-        Err(e) => {
-            let response = Response::builder()
-                .status(StatusCode::BAD_GATEWAY)
-                .header("Access-Control-Allow-Origin", "*");
-            response
-                .body(Body::from(e.to_string()))
-                .unwrap_or_else(|_| {
-                    (StatusCode::INTERNAL_SERVER_ERROR, "Gateway error").into_response()
-                })
-        }
+        Err(e) => json_error(
+            StatusCode::BAD_GATEWAY,
+            &format!("Could not reach llama-server at {url}: {e}"),
+        ),
     }
 }
 
@@ -1379,41 +1537,64 @@ async fn idle_monitor_loop(state: Arc<AppState>) {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn windows_cpu_temperature() -> Option<f32> {
+    use once_cell::sync::Lazy;
+    // Spawning PowerShell is slow, and this is polled every few seconds: cache for 30s.
+    static CACHE: Lazy<Mutex<(Option<Instant>, Option<f32>)>> =
+        Lazy::new(|| Mutex::new((None, None)));
+
+    let mut cache = CACHE.lock();
+    if let (Some(at), value) = (cache.0, cache.1) {
+        if at.elapsed() < Duration::from_secs(30) {
+            return value;
+        }
+    }
+
+    let value = hidden_command("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty CurrentTemperature",
+        ])
+        .output()
+        .ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .find_map(|l| l.trim().parse::<f32>().ok())
+        })
+        // Tenths of Kelvin -> Celsius
+        .map(|t| t / 10.0 - 273.15);
+    *cache = (Some(Instant::now()), value);
+    value
+}
+
+#[cfg(target_os = "windows")]
+fn set_windows_priority(pid: u32, class: &str) {
+    let script = format!("(Get-Process -Id {pid}).PriorityClass = '{class}'");
+    let _ = hidden_command("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script.as_str()])
+        .output();
+}
+
 fn get_cpu_temperature() -> Option<f32> {
     #[cfg(target_os = "windows")]
     {
-        use std::process::Command;
-        // Try WMI for CPU temperature
-        if let Ok(output) = Command::new("wmic")
-            .args([
-                "/namespace:\\\\root\\wmi",
-                "path",
-                "MSAcpi_ThermalZoneTemperature",
-                "get",
-                "CurrentTemperature",
-            ])
-            .output()
-        {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines().skip(1) {
-                let line = line.trim();
-                if let Ok(temp_k) = line.parse::<f32>() {
-                    // Convert from tenths of Kelvin to Celsius
-                    return Some((temp_k / 10.0) - 273.15);
-                }
-            }
-        }
+        windows_cpu_temperature()
     }
     #[cfg(target_os = "linux")]
     {
-        // Read from thermal zone
-        if let Ok(temp_str) = std::fs::read_to_string("/sys/class/thermal/thermal_zone0/temp") {
-            if let Ok(temp_millic) = temp_str.trim().parse::<f32>() {
-                return Some(temp_millic / 1000.0);
-            }
-        }
+        std::fs::read_to_string("/sys/class/thermal/thermal_zone0/temp")
+            .ok()
+            .and_then(|s| s.trim().parse::<f32>().ok())
+            .map(|millic| millic / 1000.0)
     }
-    None
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        None
+    }
 }
 
 fn determine_thermal_state(cpu_temp: f32, cpu_usage: f32) -> String {
@@ -1440,21 +1621,12 @@ async fn apply_thermal_throttle(
     if let Some(process) = model_state.llama_process.as_mut() {
         match thermal_state.as_str() {
             "throttling" => {
-                // Severe throttling: reduce threads, pause generation
+                // Severe throttling: lower the process priority
                 #[cfg(target_os = "windows")]
                 {
-                    use std::process::Command;
-                    // Lower process priority
-                    let _ = Command::new("wmic")
-                        .args([
-                            "process",
-                            "where",
-                            &format!("ProcessId={}", process.id().unwrap_or(0)),
-                            "call",
-                            "setpriority",
-                            "16384",
-                        ]) // BELOW_NORMAL_PRIORITY_CLASS
-                        .output();
+                    if let Some(pid) = process.id() {
+                        set_windows_priority(pid, "BelowNormal");
+                    }
                 }
                 #[cfg(target_os = "linux")]
                 {
@@ -1465,20 +1637,12 @@ async fn apply_thermal_throttle(
                 }
             }
             "hot" => {
-                // Moderate: reduce CPU affinity or priority slightly
+                // Moderate: restore normal priority
                 #[cfg(target_os = "windows")]
                 {
-                    use std::process::Command;
-                    let _ = Command::new("wmic")
-                        .args([
-                            "process",
-                            "where",
-                            &format!("ProcessId={}", process.id().unwrap_or(0)),
-                            "call",
-                            "setpriority",
-                            "32768",
-                        ]) // NORMAL_PRIORITY_CLASS
-                        .output();
+                    if let Some(pid) = process.id() {
+                        set_windows_priority(pid, "Normal");
+                    }
                 }
             }
             _ => {}
@@ -1488,6 +1652,7 @@ async fn apply_thermal_throttle(
 
 async fn apply_power_profile_settings(state: &Arc<AppState>, profile: &str) {
     let mut settings = state.settings.write().await;
+    settings.power_profile = profile.to_string();
 
     match profile {
         "battery_saver" => {
@@ -1632,18 +1797,8 @@ async fn apply_cpu_limit(pid: u32, max_percent: u32) {
 
     #[cfg(target_os = "windows")]
     {
-        use std::process::Command;
-        // Use Process Governor or similar for CPU limiting
-        // This is a simplified approach - in production use proper CPU limiting
-        let _ = Command::new("powershell")
-            .args([
-                "-Command",
-                &format!(
-                    "Get-Process -Id {} | ForEach-Object {{ $_.PriorityClass = 'BelowNormal' }}",
-                    pid
-                ),
-            ])
-            .output();
+        // Simplified approach: lower the priority instead of a hard CPU cap.
+        set_windows_priority(pid, "BelowNormal");
     }
     #[cfg(target_os = "linux")]
     {
@@ -1671,15 +1826,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let app_state = Arc::new(AppState::new(models_dir.clone()));
 
-    // Load settings from disk (best-effort; the app can run with defaults)
-    let state_clone = app_state.clone();
-    std::thread::spawn(move || {
-        if let Ok(rt) = tokio::runtime::Runtime::new() {
-            let _ = rt.block_on(load_settings_from_disk(&state_clone));
-        }
-    });
+    // Load settings from disk before anything reads them (best-effort; defaults otherwise).
+    // This used to run on a background thread and raced with the API-server start-up.
+    if let Err(e) = load_settings_sync(&app_state) {
+        warn!("Could not load saved settings, using defaults: {}", e);
+    }
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
@@ -1831,11 +1984,22 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             set_unload_on_minimize,
             set_max_cpu_percent,
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .map_err(|e| {
             error!("Tauri application error: {}", e);
             e
         })?;
+
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            // Do not leave llama-server running (and holding RAM and its port) after exit.
+            let state = app_handle.state::<Arc<AppState>>();
+            let process = state.model_state.lock().llama_process.take();
+            if let Some(mut process) = process {
+                let _ = process.start_kill();
+            }
+        }
+    });
     Ok(())
 }
 

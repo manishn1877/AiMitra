@@ -15,7 +15,8 @@ const MODELS_DIR = './models'
 async function downloadModel(model: typeof MODEL_REGISTRY[0]) {
   console.log(`\n📥 Downloading ${model.name} (${model.sizeGB} GB)...`)
 
-  const response = await fetch(model.url)
+  // Hugging Face mirrors answer 403 to requests without a User-Agent.
+  const response = await fetch(model.url, { headers: { 'User-Agent': 'AiMitra-downloader' } })
   if (!response.ok) {
     throw new Error(`Failed to download: ${response.statusText}`)
   }
@@ -47,7 +48,8 @@ async function downloadModel(model: typeof MODEL_REGISTRY[0]) {
   const actualHash = hash.digest('hex')
   console.log(`\n  SHA256: ${actualHash}`)
 
-  if (model.sha256 !== '...' && model.sha256 !== 'a1b2c3d4e5f6...') {
+  // An empty sha256 means "skip verification" (previously this always threw a mismatch).
+  if (model.sha256 && model.sha256 !== '...' && model.sha256 !== 'a1b2c3d4e5f6...') {
     if (actualHash !== model.sha256) {
       throw new Error(`Checksum mismatch! Expected ${model.sha256}, got ${actualHash}`)
     }

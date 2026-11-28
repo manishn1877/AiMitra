@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 REM AiMitra - One-Click Development Starter
 REM Makes it simple to open, start, and connect to VS Code
 

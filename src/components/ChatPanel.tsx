@@ -9,9 +9,9 @@ interface Message {
   content: string
   timestamp: Date
   timing?: {
-    prompt_ms: number
-    generation_ms: number
-    tokens_per_second: number
+    promptMs: number
+    generationMs: number
+    tokensPerSecond: number
   }
 }
 
@@ -22,6 +22,8 @@ export function ChatPanel() {
   const [currentResponse, setCurrentResponse] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const currentResponseRef = useRef('')
+  const stoppedRef = useRef(false)
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -33,21 +35,24 @@ export function ChatPanel() {
 
   const { generate, stop, error } = useCompletions({
     onToken: (token) => {
-      setCurrentResponse(prev => prev + token)
+      currentResponseRef.current += token
+      setCurrentResponse(currentResponseRef.current)
     },
     onComplete: (response) => {
-      if (response.done) {
-        const answer = response.text || currentResponse
-        if (answer.trim()) {
-          setMessages(prev => [...prev, {
-            id: crypto.randomUUID(),
-            role: 'assistant',
-            content: answer,
-            timestamp: new Date(),
-            timing: response.timing,
-          }])
-        }
+      // After "Stop" the partial answer was already added to the chat.
+      if (!stoppedRef.current && response.done) {
+        const answer = response.text || currentResponseRef.current
+        setMessages(prev => [...prev, {
+          id: crypto.randomUUID(),
+          role: 'assistant',
+          content: answer.trim()
+            ? answer
+            : '(The model returned an empty response. Try rephrasing, or reload the model from the Models tab.)',
+          timestamp: new Date(),
+          timing: response.timing,
+        }])
       }
+      currentResponseRef.current = ''
       // Always unlock the composer when the backend finishes, even if it
       // returns an empty or incomplete response.
       setCurrentResponse('')
@@ -55,6 +60,15 @@ export function ChatPanel() {
     },
     onError: (err) => {
       console.error('Generation error:', err)
+      // Show the failure in the chat itself instead of silently doing nothing.
+      setMessages(prev => [...prev, {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: `⚠️ ${err.message}`,
+        timestamp: new Date(),
+      }])
+      currentResponseRef.current = ''
+      setCurrentResponse('')
       setIsGenerating(false)
     },
   })
@@ -71,6 +85,8 @@ export function ChatPanel() {
     }
 
     setMessages(prev => [...prev, userMessage])
+    stoppedRef.current = false
+    currentResponseRef.current = ''
     setIsGenerating(true)
     const prompt = input.trim()
     setInput('')
@@ -81,7 +97,7 @@ export function ChatPanel() {
       .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
       .join('\n\n')
 
-    const fullPrompt = `${context}\n\nUser: ${prompt}\n\nAssistant:`
+    const fullPrompt = `${context ? `${context}\n\n` : ''}User: ${prompt}\n\nAssistant:`
 
     await generate({
       prompt: fullPrompt,
@@ -94,16 +110,19 @@ export function ChatPanel() {
   }
 
   const handleStop = () => {
+    stoppedRef.current = true
     stop()
-    if (currentResponse) {
+    const partial = currentResponseRef.current
+    if (partial) {
       setMessages(prev => [...prev, {
         id: crypto.randomUUID(),
         role: 'assistant',
-        content: currentResponse + ' [stopped]',
+        content: partial + ' [stopped]',
         timestamp: new Date(),
       }])
-      setCurrentResponse('')
     }
+    currentResponseRef.current = ''
+    setCurrentResponse('')
     setIsGenerating(false)
   }
 
@@ -177,7 +196,7 @@ export function ChatPanel() {
                       {message.timing && (
                         <span className="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1">
                           <Zap className="w-3 h-3" />
-                          {message.timing.tokens_per_second?.toFixed(1)} tok/s
+                          {message.timing.tokensPerSecond?.toFixed(1)} tok/s
                         </span>
                       )}
                     </>

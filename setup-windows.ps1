@@ -171,7 +171,7 @@ function Build-LlamaCpp {
     Write-Info "Checking llama.cpp..."
 
     $llamaServerPath = "$PSScriptRoot\src-tauri\resources\llama-server.exe"
-    if (Test-Path $llamaServerPath -and -not $ForceRebuild) {
+    if ((Test-Path $llamaServerPath) -and (-not $ForceRebuild)) {
         Write-Success "llama-server.exe already exists at $llamaServerPath"
         return
     }
@@ -195,14 +195,21 @@ function Build-LlamaCpp {
 
     if (-not (Test-Path $llamaDir)) {
         Write-Info "Cloning llama.cpp..."
-        git clone https://github.com/ggerganov/llama.cpp $llamaDir
+        git clone https://github.com/ggml-org/llama.cpp $llamaDir
+        if ($LASTEXITCODE -ne 0) {
+            Write-ErrorMsg "git clone of llama.cpp failed (exit code $LASTEXITCODE)."
+            exit 1
+        }
     }
 
     Set-Location $llamaDir
 
     Write-Info "Configuring CMake (this may take a minute)..."
     try {
-        cmake -B build -DLLAMA_BUILD_SERVER=ON -DCMAKE_BUILD_TYPE=Release
+        # Static libs: avoids missing ggml/llama DLLs next to llama-server.exe. CURL off: not needed, and breaks the configure step when libcurl is absent.
+        cmake -B build -DLLAMA_BUILD_SERVER=ON -DLLAMA_CURL=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_BUILD_TYPE=Release
+        # Native commands do not throw on failure in PowerShell, so check the exit code.
+        if ($LASTEXITCODE -ne 0) { throw "cmake configure exited with code $LASTEXITCODE" }
     } catch {
         Write-ErrorMsg "CMake configure failed. Ensure CMake and Visual Studio Build Tools are installed."
         Write-Info "Install: Visual Studio 2022 Community with 'Desktop development with C++' workload"
@@ -212,6 +219,7 @@ function Build-LlamaCpp {
     Write-Info "Building llama-server (this may take 5-15 minutes)..."
     try {
         cmake --build build --config Release --parallel
+        if ($LASTEXITCODE -ne 0) { throw "cmake build exited with code $LASTEXITCODE" }
     } catch {
         Write-ErrorMsg "Build failed: $_"
         exit 1
@@ -227,6 +235,8 @@ function Build-LlamaCpp {
         $targetDir = "$PSScriptRoot\src-tauri\resources"
         New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
         Copy-Item $builtExe -Destination "$targetDir\llama-server.exe" -Force
+        # Copy any runtime DLLs the build produced next to the exe.
+        Get-ChildItem (Split-Path $builtExe) -Filter *.dll -ErrorAction SilentlyContinue | Copy-Item -Destination $targetDir -Force
         Write-Success "llama-server.exe copied to $targetDir"
     } else {
         Write-ErrorMsg "Built binary not found at expected location"
@@ -241,6 +251,15 @@ function Create-PlaceholderIcons {
 
     $iconsDir = "$PSScriptRoot\src-tauri\icons"
     New-Item -ItemType Directory -Force -Path $iconsDir | Out-Null
+
+    # The repository ships real icons. Never overwrite them with 1x1 placeholders:
+    # that produced invalid icons and broke `tauri build` on Windows.
+    $required = @('icon.ico', '32x32.png', '128x128.png', '128x128@2x.png')
+    $missing = $required | Where-Object { -not (Test-Path (Join-Path $iconsDir $_)) }
+    if (-not $missing) {
+        Write-Success "Icons already present, keeping them"
+        return
+    }
 
     # Create a simple SVG icon
     $svg = @'

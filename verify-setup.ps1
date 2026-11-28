@@ -31,7 +31,7 @@ $requiredFiles = @(
     "src-tauri\tauri.conf.json",
     "src-tauri\src\main.rs",
     "src\main.tsx",
-    "src\App.tsx",
+    "src\App.tsx"
 )
 
 foreach ($f in $requiredFiles) {
@@ -47,12 +47,14 @@ $tools = @(
     @{ Name = "Cargo"; Cmd = "cargo --version" },
     @{ Name = "Node"; Cmd = "node --version" },
     @{ Name = "NPM"; Cmd = "npm --version" },
-    @{ Name = "Tauri CLI"; Cmd = "cargo-tauri --version" },
+    @{ Name = "Tauri CLI"; Cmd = "cargo-tauri --version" }
 )
 
 foreach ($t in $tools) {
     try {
-        $out = & $t.Cmd 2>$null
+        # $t.Cmd holds "tool --version" as one string, so it must go through Invoke-Expression.
+        $out = Invoke-Expression "$($t.Cmd) 2>`$null"
+        if ($LASTEXITCODE -ne 0 -or -not $out) { throw "not found" }
         Write-OK "$($t.Name): $out"
     } catch {
         Write-FAIL "$($t.Name): Not found"
@@ -75,7 +77,7 @@ if (Test-Path $llamaPath) {
 # 4. Check icons
 Write-INFO ""
 Write-INFO "Checking icons..."
-$icons = @("src-tauri\icons\icon.ico", "src-tauri\icons\icon.png", "src-tauri\icons\32x32.png")
+$icons = @("src-tauri\icons\icon.ico", "src-tauri\icons\128x128.png", "src-tauri\icons\32x32.png")
 foreach ($icon in $icons) {
     if (Test-Path $icon) { Write-OK "Found: $icon" }
     else { Write-WARN "Missing: $icon (using placeholder)" }
@@ -96,6 +98,7 @@ Write-INFO ""
 Write-INFO "Checking TypeScript compilation..."
 try {
     npx tsc --noEmit 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "tsc exit code $LASTEXITCODE" }
     Write-OK "TypeScript compiles without errors"
 } catch {
     Write-FAIL "TypeScript compilation failed"
@@ -106,9 +109,13 @@ try {
 Write-INFO ""
 Write-INFO "Checking Cargo.toml..."
 try {
-    cd src-tauri
-    cargo check 2>&1 | Out-Null
-    cd ..
+    Push-Location src-tauri
+    try {
+        cargo check 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "cargo check exit code $LASTEXITCODE" }
+    } finally {
+        Pop-Location
+    }
     Write-OK "Cargo.toml valid, dependencies resolvable"
 } catch {
     Write-FAIL "Cargo check failed"

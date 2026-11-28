@@ -22,7 +22,17 @@ export function App() {
   // Load initial state
   useEffect(() => {
     loadInitialState()
-    setupEventListeners()
+    // Unsubscribe on unmount, otherwise listeners pile up (duplicate alerts/progress).
+    let cancelled = false
+    let cleanup: (() => void) | undefined
+    setupEventListeners().then((fn) => {
+      if (cancelled) fn()
+      else cleanup = fn
+    })
+    return () => {
+      cancelled = true
+      cleanup?.()
+    }
   }, [])
 
   const loadInitialState = async () => {
@@ -42,7 +52,7 @@ export function App() {
     }
   }
 
-  const setupEventListeners = () => {
+  const setupEventListeners = async (): Promise<() => void> => {
     // Listen for download progress events
     const setup = async () => {
       const { listen } = await import('@tauri-apps/api/event')
@@ -83,7 +93,7 @@ export function App() {
         unlistenComplete()
       }
     }
-    setup()
+    return setup()
   }
 
   const applyTheme = (themeSetting: 'light' | 'dark' | 'system', systemTheme: 'light' | 'dark') => {

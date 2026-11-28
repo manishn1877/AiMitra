@@ -62,7 +62,7 @@ export function SettingsPanel() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
-  const [systemInfo, setSystemInfo] = useState<{ ramGB: number; cpuCores: number; gpu: string } | null>(null)
+  const [systemInfo, setSystemInfo] = useState<{ ramGb: number; cpuCores: number; gpu: string } | null>(null)
   const [thermalState, setThermalState] = useState<{ thermal_state: string; cpu_temp: number; cpu_usage: number } | null>(null)
 
   useEffect(() => {
@@ -98,7 +98,7 @@ export function SettingsPanel() {
 
   const loadSystemInfo = async () => {
     try {
-      const info = await invoke<{ ramGB: number; cpuCores: number; gpu: string }>('get_system_info')
+      const info = await invoke<{ ramGb: number; cpuCores: number; gpu: string }>('get_system_info')
       setSystemInfo(info)
       if (settings.threads === 0) {
         setSettings(prev => ({ ...prev, threads: info.cpuCores }))
@@ -171,7 +171,7 @@ export function SettingsPanel() {
           <div className="grid grid-cols-3 gap-4 text-sm">
             <div>
               <span className="text-slate-500 dark:text-slate-400">RAM</span>
-              <div className="font-mono text-slate-900 dark:text-slate-100">{systemInfo.ramGB} GB</div>
+              <div className="font-mono text-slate-900 dark:text-slate-100">{systemInfo.ramGb} GB</div>
             </div>
             <div>
               <span className="text-slate-500 dark:text-slate-400">CPU Cores</span>
@@ -543,7 +543,8 @@ function SettingSelect({
       <label className="text-sm text-slate-700 dark:text-slate-300">{label}</label>
       <select
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        // Numeric options must stay numbers, otherwise saving settings fails in Rust.
+        onChange={(e) => onChange(typeof options[0] === 'number' ? Number(e.target.value) : e.target.value)}
         disabled={disabled}
         className="input w-full max-w-xs"
       >
