@@ -35,6 +35,9 @@ jobs:
       - name: TypeScript and frontend build
         run: npm run build
 
+      - name: Frontend tests
+        run: npm test
+
   # Rust backend checks
   backend:
     name: Backend (Rust fmt, clippy, build)
