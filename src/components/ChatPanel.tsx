@@ -2,21 +2,19 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { Send, X, Copy, Bot, User, Zap } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { useCompletions } from '../hooks/useCompletions'
+import { useChatStore, type ChatMessage } from '../lib/chatStore'
+import { MessageContent } from './MessageContent'
 
-interface Message {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-  timestamp: Date
-  timing?: {
-    prompt_ms: number
-    generation_ms: number
-    tokens_per_second: number
-  }
-}
+const EMPTY_MESSAGES: ChatMessage[] = []
 
 export function ChatPanel() {
-  const [messages, setMessages] = useState<Message[]>([])
+  const messages = useChatStore(
+    (s) => s.conversations.find((c) => c.id === s.activeId)?.messages ?? EMPTY_MESSAGES,
+  )
+  const addMessage = useChatStore((s) => s.addMessage)
+  // The run that is currently waiting for the model. Cleared by Stop so a late
+  // reply from a stopped request is not added to the chat.
+  const activeRunRef = useRef<{ conversationId: string | null } | null>(null)
   const [input, setInput] = useState('')
   const [isGenerating, setIsGenerating] = useState(false)
   const [currentResponse, setCurrentResponse] = useState('')
@@ -36,52 +34,49 @@ export function ChatPanel() {
       setCurrentResponse(prev => prev + token)
     },
     onComplete: (response) => {
-      if (response.done) {
+      const run = activeRunRef.current
+      if (run && response.done) {
         const answer = response.text || currentResponse
         if (answer.trim()) {
-          setMessages(prev => [...prev, {
-            id: crypto.randomUUID(),
+          addMessage(run.conversationId, {
             role: 'assistant',
             content: answer,
-            timestamp: new Date(),
             timing: response.timing,
-          }])
+          })
         }
       }
       // Always unlock the composer when the backend finishes, even if it
       // returns an empty or incomplete response.
+      activeRunRef.current = null
       setCurrentResponse('')
       setIsGenerating(false)
     },
     onError: (err) => {
       console.error('Generation error:', err)
+      activeRunRef.current = null
       setIsGenerating(false)
     },
   })
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.SyntheticEvent) => {
     e.preventDefault()
     if (!input.trim() || isGenerating) return
 
-    const userMessage: Message = {
-      id: crypto.randomUUID(),
-      role: 'user',
-      content: input.trim(),
-      timestamp: new Date(),
-    }
-
-    setMessages(prev => [...prev, userMessage])
-    setIsGenerating(true)
     const prompt = input.trim()
-    setInput('')
-
-    // Build context from recent messages
+    // Build context from recent messages (before adding the new one).
     const context = messages
-      .slice(-6) // Last 6 messages for context
-      .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
+      .slice(-6)
+      .map((m) => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
       .join('\n\n')
+    const fullPrompt = `${context}${context ? '\n\n' : ''}User: ${prompt}\n\nAssistant:`
 
-    const fullPrompt = `${context}\n\nUser: ${prompt}\n\nAssistant:`
+    const conversationId = addMessage(useChatStore.getState().activeId, {
+      role: 'user',
+      content: prompt,
+    })
+    activeRunRef.current = { conversationId }
+    setIsGenerating(true)
+    setInput('')
 
     await generate({
       prompt: fullPrompt,
@@ -95,15 +90,12 @@ export function ChatPanel() {
 
   const handleStop = () => {
     stop()
-    if (currentResponse) {
-      setMessages(prev => [...prev, {
-        id: crypto.randomUUID(),
-        role: 'assistant',
-        content: currentResponse + ' [stopped]',
-        timestamp: new Date(),
-      }])
-      setCurrentResponse('')
+    const run = activeRunRef.current
+    activeRunRef.current = null
+    if (run && currentResponse) {
+      addMessage(run.conversationId, { role: 'assistant', content: `${currentResponse} [stopped]` })
     }
+    setCurrentResponse('')
     setIsGenerating(false)
   }
 
@@ -112,7 +104,7 @@ export function ChatPanel() {
   }
 
   return (
-    <div className="flex flex-col h-full overflow-hidden">
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
       {/* Messages Area */}
       <div className="flex-1 overflow-y-auto p-4 space-y-6 scrollbar-thin">
         {messages.length === 0 && !isGenerating && (
@@ -160,10 +152,10 @@ export function ChatPanel() {
                   ? 'bg-brand-50 dark:bg-brand-900/20 ml-auto text-slate-900 dark:text-slate-100 rounded-tr-sm'
                   : 'bg-slate-100 dark:bg-slate-800 mr-auto text-slate-900 dark:text-slate-100 rounded-tl-sm'
               )}>
-                <pre className="whitespace-pre-wrap text-sm font-mono leading-relaxed">{message.content}</pre>
+                <MessageContent content={message.content} />
                 <div className="flex items-center justify-end gap-2 mt-2">
                   <span className="text-xs text-slate-500 dark:text-slate-400">
-                    {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   </span>
                   {message.role === 'assistant' && (
                     <>
@@ -227,7 +219,7 @@ export function ChatPanel() {
             rows={1}
             disabled={isGenerating}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault()
                 handleSubmit(e)
               }

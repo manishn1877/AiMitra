@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "download:models": "tsx scripts/download-models.ts"
+    "download:models": "tsx scripts/download-models.ts",
+    "test": "tsx --test \"src/**/*.test.ts\""
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
