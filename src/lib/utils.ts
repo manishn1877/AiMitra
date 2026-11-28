@@ -24,10 +24,9 @@ export function formatDuration(ms: number): string {
 
 export function getModelDisplayName(id: string): string {
   const names: Record<string, string> = {
-    'codeqwen-1.5b': 'CodeQwen 1.5B',
+    'qwen2.5-coder-1.5b': 'Qwen2.5 Coder 1.5B',
     'deepseek-coder-1.3b': 'DeepSeek Coder 1.3B',
     'phi-3-mini': 'Phi-3 Mini 4K',
-    'stable-code-3b': 'Stable Code 3B',
   }
   return names[id] || id
 }

@@ -200,6 +200,7 @@ struct AppState {
     model_state: parking_lot::Mutex<ModelState>,
     models_dir: PathBuf,
     download_tx: broadcast::Sender<(String, f32)>, // (model_id, progress)
+    active_downloads: parking_lot::Mutex<std::collections::HashSet<String>>,
     api_server: parking_lot::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     system: parking_lot::Mutex<System>,
     last_tokens_per_second: RwLock<Option<f32>>,
@@ -223,6 +224,7 @@ impl AppState {
             }),
             models_dir,
             download_tx,
+            active_downloads: Mutex::new(std::collections::HashSet::new()),
             api_server: Mutex::new(None),
             system: parking_lot::Mutex::new(System::new_all()),
             last_tokens_per_second: RwLock::new(None),
@@ -238,37 +240,34 @@ impl AppState {
 // ============================================================================
 
 fn get_model_registry() -> Vec<ModelInfo> {
+    // Every URL here was checked against the public Hugging Face file listing
+    // (no login needed). Do not add third-party proxy mirrors: llama.cpp parses
+    // these files, so they must come from the origin repository.
     vec![
         ModelInfo {
-            id: "codeqwen-1.5b".to_string(),
-            name: "CodeQwen 1.5B".to_string(),
-            description: "Fast, efficient code model from Alibaba. Great for Python, JS, TS, Java.".to_string(),
-            size_gb: 1.1,
+            id: "qwen2.5-coder-1.5b".to_string(),
+            name: "Qwen2.5 Coder 1.5B".to_string(),
+            description: "Fast, efficient code model from Alibaba (Apache-2.0). Great for Python, JS, TS, Java.".to_string(),
+            size_gb: 1.12,
             ram_required_gb: 3.0,
-            url: "https://huggingface.co/Qwen/CodeQwen1.5-1.5B-GGUF/resolve/main/codeqwen1.5-1.5b-q4_k_m.gguf".to_string(),
-            mirrors: vec![
-                "https://hf-mirror.com/Qwen/CodeQwen1.5-1.5B-GGUF/resolve/main/codeqwen1.5-1.5b-q4_k_m.gguf".to_string(),
-                "https://mirror.ghproxy.com/https://huggingface.co/Qwen/CodeQwen1.5-1.5B-GGUF/resolve/main/codeqwen1.5-1.5b-q4_k_m.gguf".to_string(),
-            ],
-            sha256: "".to_string(),
-            filename: "codeqwen1.5-1.5b-q4_k_m.gguf".to_string(),
-            context_length: 8192,
+            url: "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/resolve/main/qwen2.5-coder-1.5b-instruct-q4_k_m.gguf".to_string(),
+            mirrors: vec![],
+            sha256: String::new(),
+            filename: "qwen2.5-coder-1.5b-instruct-q4_k_m.gguf".to_string(),
+            context_length: 32768,
             tags: vec!["code".to_string(), "fast".to_string(), "low-ram".to_string()],
             recommended: true,
         },
         ModelInfo {
             id: "deepseek-coder-1.3b".to_string(),
             name: "DeepSeek Coder 1.3B".to_string(),
-            description: "Strong code completion from DeepSeek. Excellent for infilling.".to_string(),
-            size_gb: 0.9,
+            description: "Strong code completion from DeepSeek (community GGUF by TheBloke, DeepSeek license).".to_string(),
+            size_gb: 0.87,
             ram_required_gb: 2.5,
-            url: "https://huggingface.co/deepseek-ai/deepseek-coder-1.3b-instruct-GGUF/resolve/main/deepseek-coder-1.3b-instruct-q4_k_m.gguf".to_string(),
-            mirrors: vec![
-                "https://hf-mirror.com/deepseek-ai/deepseek-coder-1.3b-instruct-GGUF/resolve/main/deepseek-coder-1.3b-instruct-q4_k_m.gguf".to_string(),
-                "https://mirror.ghproxy.com/https://huggingface.co/deepseek-ai/deepseek-coder-1.3b-instruct-GGUF/resolve/main/deepseek-coder-1.3b-instruct-q4_k_m.gguf".to_string(),
-            ],
-            sha256: "".to_string(),
-            filename: "deepseek-coder-1.3b-instruct-q4_k_m.gguf".to_string(),
+            url: "https://huggingface.co/TheBloke/deepseek-coder-1.3b-instruct-GGUF/resolve/main/deepseek-coder-1.3b-instruct.Q4_K_M.gguf".to_string(),
+            mirrors: vec![],
+            sha256: String::new(),
+            filename: "deepseek-coder-1.3b-instruct.Q4_K_M.gguf".to_string(),
             context_length: 16384,
             tags: vec!["code".to_string(), "infilling".to_string(), "low-ram".to_string()],
             recommended: true,
@@ -276,36 +275,16 @@ fn get_model_registry() -> Vec<ModelInfo> {
         ModelInfo {
             id: "phi-3-mini".to_string(),
             name: "Phi-3 Mini 4K".to_string(),
-            description: "Microsoft's small but mighty model. Best reasoning in class.".to_string(),
-            size_gb: 2.3,
+            description: "Microsoft's small general-purpose model (4-bit GGUF from the official repo).".to_string(),
+            size_gb: 2.39,
             ram_required_gb: 4.0,
-            url: "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4_k_m.gguf".to_string(),
-            mirrors: vec![
-                "https://hf-mirror.com/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4_k_m.gguf".to_string(),
-                "https://mirror.ghproxy.com/https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4_k_m.gguf".to_string(),
-            ],
-            sha256: "".to_string(),
-            filename: "phi-3-mini-4k-instruct-q4_k_m.gguf".to_string(),
+            url: "https://huggingface.co/microsoft/Phi-3-mini-4k-instruct-gguf/resolve/main/Phi-3-mini-4k-instruct-q4.gguf".to_string(),
+            mirrors: vec![],
+            sha256: String::new(),
+            filename: "Phi-3-mini-4k-instruct-q4.gguf".to_string(),
             context_length: 4096,
             tags: vec!["reasoning".to_string(), "chat".to_string(), "general".to_string()],
             recommended: true,
-        },
-        ModelInfo {
-            id: "stable-code-3b".to_string(),
-            name: "Stable Code 3B".to_string(),
-            description: "Stability AI's code model. Good balance of size and capability.".to_string(),
-            size_gb: 1.8,
-            ram_required_gb: 3.5,
-            url: "https://huggingface.co/stabilityai/stable-code-3b-GGUF/resolve/main/stable-code-3b-q4_k_m.gguf".to_string(),
-            mirrors: vec![
-                "https://hf-mirror.com/stabilityai/stable-code-3b-GGUF/resolve/main/stable-code-3b-q4_k_m.gguf".to_string(),
-                "https://mirror.ghproxy.com/https://huggingface.co/stabilityai/stable-code-3b-GGUF/resolve/main/stable-code-3b-q4_k_m.gguf".to_string(),
-            ],
-            sha256: "".to_string(),
-            filename: "stable-code-3b-q4_k_m.gguf".to_string(),
-            context_length: 16384,
-            tags: vec!["code".to_string(), "fill-in-middle".to_string()],
-            recommended: false,
         },
     ]
 }
@@ -440,13 +419,25 @@ async fn download_model(
     app: tauri::AppHandle,
     state: State<'_, Arc<AppState>>,
     model_id: String,
-    urls: Vec<String>,
-    filename: String,
-    expected_sha256: String,
 ) -> Result<(), String> {
-    if model_id.trim().is_empty() || filename.trim().is_empty() || urls.is_empty() {
-        return Err("Invalid model download details.".to_string());
+    // URLs and filenames always come from the built-in registry, never from the
+    // webview, so a bad caller cannot choose where a file is written.
+    let model = get_model_registry()
+        .into_iter()
+        .find(|m| m.id == model_id)
+        .ok_or("Unknown model. It is not in the built-in model list.")?;
+    let mut urls = vec![model.url.clone()];
+    urls.extend(model.mirrors.iter().cloned());
+    let filename = model.filename.clone();
+    let expected_sha256 = model.sha256.clone();
+
+    if !state.active_downloads.lock().insert(model_id.clone()) {
+        return Err("This model is already downloading.".to_string());
     }
+    let guard = DownloadGuard {
+        state: state.inner().clone(),
+        model_id: model_id.clone(),
+    };
 
     let models_dir = state.models_dir.clone();
     let download_tx = state.download_tx.clone();
@@ -460,6 +451,7 @@ async fn download_model(
     .map_err(|e| format!("Could not start download UI: {e}"))?;
 
     tokio::spawn(async move {
+        let _guard = guard;
         let download = download_model_internal(
             &models_dir,
             &model_id,
@@ -512,6 +504,18 @@ async fn download_model(
     Ok(())
 }
 
+/// Releases the "already downloading" marker even if the download task panics.
+struct DownloadGuard {
+    state: Arc<AppState>,
+    model_id: String,
+}
+
+impl Drop for DownloadGuard {
+    fn drop(&mut self) {
+        self.state.active_downloads.lock().remove(&self.model_id);
+    }
+}
+
 fn is_valid_gguf_file(path: &Path) -> bool {
     let Ok(metadata) = std::fs::metadata(path) else {
         return false;
@@ -527,6 +531,14 @@ fn is_valid_gguf_file(path: &Path) -> bool {
     file.read_exact(&mut magic).is_ok() && &magic == b"GGUF"
 }
 
+/// Downloads are written to `<name>.part` and only renamed to `<name>` after
+/// every check passes, so a half-finished file can never look like a model.
+fn partial_path(final_path: &Path) -> PathBuf {
+    let mut name = final_path.as_os_str().to_owned();
+    name.push(".part");
+    PathBuf::from(name)
+}
+
 async fn download_model_internal(
     models_dir: &Path,
     model_id: &str,
@@ -537,14 +549,17 @@ async fn download_model_internal(
 ) -> Result<()> {
     std::fs::create_dir_all(models_dir).context("Create models dir")?;
 
-    let client = Client::new();
+    let client = Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .build()
+        .context("Create HTTP client")?;
     let file_path = models_dir.join(filename);
 
     // Try each URL (primary + mirrors) until one works
     let mut last_error = None;
     for (idx, url) in urls.iter().enumerate() {
-        info!("Trying download from mirror {}: {}", idx + 1, url);
-        let _ = download_tx.send((model_id.to_string(), -2.0 - idx as f32)); // Signal which mirror
+        info!("Trying download source {}: {}", idx + 1, url);
+        let _ = download_tx.send((model_id.to_string(), -2.0 - idx as f32)); // Signal which source
 
         match try_download_from_url(
             &client,
@@ -557,23 +572,21 @@ async fn download_model_internal(
         .await
         {
             Ok(()) => {
-                info!("Download complete from mirror {}: {}", idx + 1, model_id);
+                info!("Download complete from source {}: {}", idx + 1, model_id);
                 let _ = download_tx.send((model_id.to_string(), 100.0));
                 return Ok(());
             }
             Err(e) => {
-                warn!("Mirror {} failed: {}", idx + 1, e);
+                warn!("Download source {} failed: {:#}", idx + 1, e);
                 last_error = Some(e);
-                // Clean up partial file
-                let _ = std::fs::remove_file(&file_path);
-                // Small delay before trying next mirror
+                // A failed attempt never touches an already-installed model file;
+                // its partial file was removed by try_download_from_url.
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
         }
     }
 
-    // All mirrors failed
-    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("All download mirrors failed")))
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("All download sources failed")))
 }
 
 async fn try_download_from_url(
@@ -584,57 +597,108 @@ async fn try_download_from_url(
     model_id: &str,
     download_tx: &broadcast::Sender<(String, f32)>,
 ) -> Result<()> {
+    let part_path = partial_path(file_path);
+
+    if let Err(err) = download_to_part(
+        client,
+        url,
+        &part_path,
+        expected_sha256,
+        model_id,
+        download_tx,
+    )
+    .await
+    {
+        let _ = tokio::fs::remove_file(&part_path).await;
+        return Err(err);
+    }
+
+    if let Err(err) = tokio::fs::rename(&part_path, file_path).await {
+        let _ = tokio::fs::remove_file(&part_path).await;
+        return Err(anyhow::Error::new(err).context(
+            "Could not move the finished download into place. Is the model currently in use?",
+        ));
+    }
+    Ok(())
+}
+
+async fn download_to_part(
+    client: &Client,
+    url: &str,
+    part_path: &Path,
+    expected_sha256: &str,
+    model_id: &str,
+    download_tx: &broadcast::Sender<(String, f32)>,
+) -> Result<()> {
     let response = client
         .get(url)
         .send()
         .await
-        .with_context(|| format!("Request failed for {url}"))?
-        .error_for_status()
-        .with_context(|| format!("Model server returned an HTTP error for {url}"))?;
-    let total_size = response.content_length().unwrap_or(0) as f32;
+        .with_context(|| format!("Request failed for {url}"))?;
 
-    let mut file = tokio::fs::File::create(file_path)
+    let status = response.status();
+    if !status.is_success() {
+        let hint = if matches!(status.as_u16(), 401 | 403 | 404) {
+            " (the file is missing or requires a login)"
+        } else {
+            ""
+        };
+        anyhow::bail!("Download server returned HTTP {status}{hint} for {url}");
+    }
+
+    let expected_len = response.content_length();
+    let mut file = tokio::fs::File::create(part_path)
         .await
-        .context("Create file")?;
+        .context("Create partial download file")?;
     let mut hasher = Sha256::new();
-    let mut downloaded: f32 = 0.0;
+    let mut written: u64 = 0;
+    let mut last_sent = -1.0_f32;
     let mut stream = response.bytes_stream();
 
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.context("Read chunk")?;
-        tokio::io::AsyncWriteExt::write_all(&mut file, &chunk)
+    loop {
+        let next = tokio::time::timeout(Duration::from_secs(60), stream.next())
             .await
-            .context("Write chunk")?;
+            .map_err(|_| anyhow::anyhow!("Download stalled: no data received for 60 seconds"))?;
+        let Some(chunk) = next else {
+            break;
+        };
+        let chunk = chunk.context("Read chunk")?;
+        file.write_all(&chunk).await.context("Write chunk")?;
         hasher.update(&chunk);
-        downloaded += chunk.len() as f32;
+        written += chunk.len() as u64;
 
-        if total_size > 0.0 {
-            let progress = (downloaded / total_size) * 100.0;
-            let _ = download_tx.send((model_id.to_string(), progress));
+        if let Some(total) = expected_len.filter(|t| *t > 0) {
+            let progress = (written as f64 / total as f64 * 100.0) as f32;
+            if progress - last_sent >= 0.5 {
+                last_sent = progress;
+                let _ = download_tx.send((model_id.to_string(), progress.min(99.9)));
+            }
         }
     }
 
     file.flush().await.context("Flush file")?;
+    file.sync_all().await.context("Sync file")?;
     drop(file);
+
+    if let Some(expected) = expected_len {
+        if written != expected {
+            anyhow::bail!("Download incomplete: received {written} of {expected} bytes");
+        }
+    }
 
     // A successful HTTP response can still contain an error page or text body.
     // GGUF files start with the four-byte "GGUF" magic and are much larger than 1 MiB.
-    if !is_valid_gguf_file(file_path) {
+    if !is_valid_gguf_file(part_path) {
         anyhow::bail!(
             "Downloaded response is not a valid GGUF model (missing GGUF header or file is too small). The server may have returned an error page."
         );
     }
 
-    // Verify checksum (only if provided and not empty)
+    // Verify checksum (only if the registry provides one)
     if !expected_sha256.is_empty() {
         let actual = hex::encode(hasher.finalize());
-        if actual != expected_sha256 {
-            std::fs::remove_file(file_path).ok();
-            anyhow::bail!(
-                "Checksum mismatch: expected {}, got {}",
-                expected_sha256,
-                actual
-            );
+        if !actual.eq_ignore_ascii_case(expected_sha256) {
+            anyhow::bail!("Checksum mismatch: expected {expected_sha256}, got {actual}");
         }
     }
 
@@ -1841,4 +1905,241 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() {
     run().expect("Application failed to start");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ERROR_BODY: &[u8] = b"Invalid username or password.";
+
+    fn unique_dir(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("aimitra-test-{}-{}", std::process::id(), name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        dir
+    }
+
+    fn fake_gguf_bytes() -> Vec<u8> {
+        let mut bytes = b"GGUF".to_vec();
+        bytes.resize(1_200_000, 7);
+        bytes
+    }
+
+    async fn denied() -> (StatusCode, &'static str) {
+        (StatusCode::UNAUTHORIZED, "Invalid username or password.")
+    }
+
+    async fn ok_with_error_text() -> &'static str {
+        "Invalid username or password."
+    }
+
+    async fn good_model() -> Vec<u8> {
+        fake_gguf_bytes()
+    }
+
+    async fn serve() -> String {
+        let app = Router::new()
+            .route("/denied", get(denied))
+            .route("/error-text", get(ok_with_error_text))
+            .route("/model", get(good_model));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{addr}")
+    }
+
+    #[test]
+    fn rejects_the_29_byte_error_text_that_was_once_saved_as_a_model() {
+        let dir = unique_dir("error-text");
+        let path = dir.join("model.gguf");
+        std::fs::write(&path, ERROR_BODY).unwrap();
+        assert_eq!(ERROR_BODY.len(), 29);
+        assert!(!is_valid_gguf_file(&path));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rejects_large_file_without_gguf_magic() {
+        let dir = unique_dir("no-magic");
+        let path = dir.join("model.gguf");
+        std::fs::write(&path, vec![0_u8; 2 * 1024 * 1024]).unwrap();
+        assert!(!is_valid_gguf_file(&path));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn rejects_tiny_file_even_with_gguf_magic() {
+        let dir = unique_dir("tiny");
+        let path = dir.join("model.gguf");
+        std::fs::write(&path, b"GGUF-but-far-too-small").unwrap();
+        assert!(!is_valid_gguf_file(&path));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn accepts_plausible_gguf_file() {
+        let dir = unique_dir("plausible");
+        let path = dir.join("model.gguf");
+        std::fs::write(&path, fake_gguf_bytes()).unwrap();
+        assert!(is_valid_gguf_file(&path));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn registry_entries_are_well_formed() {
+        let registry = get_model_registry();
+        assert!(!registry.is_empty());
+        let mut ids = std::collections::HashSet::new();
+        let mut filenames = std::collections::HashSet::new();
+        for model in &registry {
+            assert!(ids.insert(model.id.clone()), "duplicate id {}", model.id);
+            assert!(
+                filenames.insert(model.filename.clone()),
+                "duplicate filename {}",
+                model.filename
+            );
+            assert!(model.filename.ends_with(".gguf"));
+            assert!(
+                !model.filename.contains('/')
+                    && !model.filename.contains('\\')
+                    && !model.filename.contains(".."),
+                "unsafe filename {}",
+                model.filename
+            );
+            for url in std::iter::once(&model.url).chain(model.mirrors.iter()) {
+                assert!(
+                    url.starts_with("https://huggingface.co/"),
+                    "{} must be served by the origin repository, got {url}",
+                    model.id
+                );
+                assert!(
+                    url.ends_with(&model.filename),
+                    "{} url/filename mismatch",
+                    model.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn partial_files_use_a_part_suffix() {
+        let final_path = Path::new("models").join("a.gguf");
+        assert_eq!(
+            partial_path(&final_path).file_name().unwrap(),
+            "a.gguf.part"
+        );
+    }
+
+    #[tokio::test]
+    async fn http_401_is_rejected_and_leaves_no_files() {
+        let base = serve().await;
+        let dir = unique_dir("http-401");
+        let target = dir.join("m.gguf");
+        let (tx, _rx) = broadcast::channel(16);
+
+        let err = try_download_from_url(
+            &Client::new(),
+            &format!("{base}/denied"),
+            &target,
+            "",
+            "m",
+            &tx,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("401"), "unexpected error: {err:#}");
+        assert!(!target.exists());
+        assert!(!partial_path(&target).exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn http_200_error_text_is_rejected_and_cleaned_up() {
+        let base = serve().await;
+        let dir = unique_dir("http-200-text");
+        let target = dir.join("m.gguf");
+        let (tx, _rx) = broadcast::channel(16);
+
+        let err = try_download_from_url(
+            &Client::new(),
+            &format!("{base}/error-text"),
+            &target,
+            "",
+            "m",
+            &tx,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("not a valid GGUF"),
+            "unexpected error: {err:#}"
+        );
+        assert!(!target.exists());
+        assert!(!partial_path(&target).exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn valid_download_is_published_atomically() {
+        let base = serve().await;
+        let dir = unique_dir("good");
+        let target = dir.join("m.gguf");
+        let (tx, _rx) = broadcast::channel(16);
+        let expected = hex::encode(Sha256::digest(fake_gguf_bytes()));
+
+        try_download_from_url(
+            &Client::new(),
+            &format!("{base}/model"),
+            &target,
+            &expected,
+            "m",
+            &tx,
+        )
+        .await
+        .expect("download should succeed");
+
+        assert!(is_valid_gguf_file(&target));
+        assert!(!partial_path(&target).exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn checksum_mismatch_is_rejected_and_keeps_existing_model() {
+        let base = serve().await;
+        let dir = unique_dir("bad-sha");
+        let target = dir.join("m.gguf");
+        std::fs::write(&target, fake_gguf_bytes()).unwrap();
+        let (tx, _rx) = broadcast::channel(16);
+        let wrong = "0".repeat(64);
+
+        let err = try_download_from_url(
+            &Client::new(),
+            &format!("{base}/model"),
+            &target,
+            &wrong,
+            "m",
+            &tx,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("Checksum mismatch"),
+            "unexpected error: {err:#}"
+        );
+        assert!(
+            is_valid_gguf_file(&target),
+            "existing model must survive a failed re-download"
+        );
+        assert!(!partial_path(&target).exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

@@ -83,7 +83,7 @@ npm run tauri:build
 ## 💡 Pro Tips
 
 1. **First-time model setup:**
-   - Go to Models tab → Download CodeQwen 1.5B (1.1GB, fastest)
+   - Go to Models tab → Download Qwen2.5 Coder 1.5B (1.1GB, fastest)
    - Click "Use" → Go to Chat tab → Start coding!
 
 2. **VS Code debugging:**

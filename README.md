@@ -18,10 +18,9 @@
 
 | Model | Size | RAM Needed | Best For | Tags |
 |-------|------|------------|----------|------|
-| **CodeQwen 1.5B** | 1.1 GB | ~3 GB | General coding, fast responses | code, fast, low-ram |
+| **Qwen2.5 Coder 1.5B** | 1.1 GB | ~3 GB | General coding, fast responses | code, fast, low-ram |
 | **DeepSeek Coder 1.3B** | 0.9 GB | ~2.5 GB | Code completion, infilling | code, infilling, low-ram |
 | **Phi-3 Mini 4K** | 2.3 GB | ~4 GB | Reasoning, explanations, chat | reasoning, chat, general |
-| **Stable Code 3B** | 1.8 GB | ~3.5 GB | Balanced code tasks | code, fill-in-middle |
 | **CodeLlama 7B** | 4.0 GB | ~7 GB | General purpose coding | code, general |
 | **Mistral 7B** | 4.0 GB | ~7 GB | Reasoning, chat | reasoning, chat |
 | **Gemma 2 9B** | 5.5 GB | ~10 GB | Open-ended tasks | general, reasoning |
